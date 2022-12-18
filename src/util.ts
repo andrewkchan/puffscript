@@ -1,0 +1,1 @@
+export type ReportError = (line: number, msg: string) => void

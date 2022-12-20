@@ -32,8 +32,20 @@ export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | GroupExpr | I
 
 export interface AssignExpr extends Node {
   kind: NodeKind.ASSIGN_EXPR
+  operator: Token
   left: IndexExpr | VariableExpr
   right: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function assignExpr({ left, operator, right }: { left: IndexExpr | VariableExpr; operator: Token; right: Expr }): AssignExpr {
+  return {
+    kind: NodeKind.ASSIGN_EXPR,
+    operator,
+    left,
+    right,
+    resolvedType: null
+  }
 }
 
 export interface BinaryExpr extends Node {
@@ -41,6 +53,17 @@ export interface BinaryExpr extends Node {
   left: Expr
   operator: Token
   right: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function binaryExpr({ left, operator, right }: { left: Expr; operator: Token; right: Expr }): BinaryExpr {
+  return {
+    kind: NodeKind.BINARY_EXPR,
+    left,
+    operator,
+    right,
+    resolvedType: null
+  }
 }
 
 export interface CallExpr extends Node {
@@ -48,17 +71,47 @@ export interface CallExpr extends Node {
   callee: Expr
   paren: Token
   args: Expr[]
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function callExpr({ callee, paren, args }: { callee: Expr; paren: Token; args: Expr[] }): CallExpr {
+  return {
+    kind: NodeKind.CALL_EXPR,
+    callee,
+    paren,
+    args,
+    resolvedType: null
+  }
 }
 
 export interface CastExpr extends Node {
   kind: NodeKind.CAST_EXPR
   type: Type
   value: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function castExpr({ type, value }: { type: Type; value: Expr }): CastExpr {
+  return {
+    kind: NodeKind.CAST_EXPR,
+    type,
+    value,
+    resolvedType: null
+  }
 }
 
 export interface GroupExpr extends Node {
   kind: NodeKind.GROUP_EXPR
   expression: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function groupExpr({ expression }: { expression: Expr }): GroupExpr {
+  return {
+    kind: NodeKind.GROUP_EXPR,
+    expression,
+    resolvedType: null
+  }
 }
 
 export interface IndexExpr extends Node {
@@ -66,12 +119,33 @@ export interface IndexExpr extends Node {
   callee: Expr
   bracket: Token
   index: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function indexExpr({ callee, bracket, index }: { callee: Expr; bracket: Token; index: Expr }): IndexExpr {
+  return {
+    kind: NodeKind.INDEX_EXPR,
+    callee,
+    bracket,
+    index,
+    resolvedType: null
+  }
 }
 
 export interface LiteralExpr extends Node {
   kind: NodeKind.LITERAL_EXPR
   value: any
   type: Type
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function literalExpr({ value, type }: { value: any; type: Type }): LiteralExpr {
+  return {
+    kind: NodeKind.LITERAL_EXPR,
+    value,
+    type,
+    resolvedType: null
+  }
 }
 
 export interface LogicalExpr extends Node {
@@ -79,17 +153,47 @@ export interface LogicalExpr extends Node {
   left: Expr
   operator: Token
   right: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function logicalExpr({ left, operator, right }: { left: Expr; operator: Token; right: Expr }): LogicalExpr {
+  return {
+    kind: NodeKind.LOGICAL_EXPR,
+    left,
+    operator,
+    right,
+    resolvedType: null
+  }
 }
 
 export interface UnaryExpr extends Node {
   kind: NodeKind.UNARY_EXPR
   operator: Token
   right: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function unaryExpr({ operator, right }: { operator: Token; right: Expr }): UnaryExpr {
+  return {
+    kind: NodeKind.UNARY_EXPR,
+    operator,
+    right,
+    resolvedType: null
+  }
 }
 
 export interface VariableExpr extends Node {
   kind: NodeKind.VARIABLE_EXPR
   name: Token
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function variableExpr({ name }: { name: Token }): VariableExpr {
+  return {
+    kind: NodeKind.VARIABLE_EXPR,
+    name,
+    resolvedType: null
+  }
 }
 
 export enum TypeCategory {
@@ -125,13 +229,20 @@ interface SimpleType {
   category: TypeCategory.VOID | TypeCategory.INT | TypeCategory.FLOAT | TypeCategory.BYTE | TypeCategory.BOOL
 }
 
-interface ArrayType {
+export interface ArrayType {
   category: TypeCategory.ARRAY
   elementType: Type
   length: number
 }
 
 export type Type = ArrayType | SimpleType
+
+export function isEqual(a: Type, b: Type): boolean {
+  if (a.category === TypeCategory.ARRAY && b.category === TypeCategory.ARRAY) {
+    return isEqual(a.elementType, b.elementType) && a.length === b.length
+  }
+  return a.category === b.category
+}
 
 export interface Param {
   type: Type
@@ -144,11 +255,31 @@ export type TopStmt = FunctionStmt | VarStmt
 export interface BlockStmt extends Node {
   kind: NodeKind.BLOCK_STMT
   statements: Stmt[]
+  scope: Scope
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function blockStmt({ statements, scope }: { statements: Stmt[]; scope: Scope }): BlockStmt {
+  return {
+    kind: NodeKind.BLOCK_STMT,
+    statements,
+    scope,
+    isLiveAtEnd: null
+  }
 }
 
 export interface ExpressionStmt extends Node {
   kind: NodeKind.EXPRESSION_STMT
   expression: Expr
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function expressionStmt({ expression }: { expression: Expr }): ExpressionStmt {
+  return {
+    kind: NodeKind.EXPRESSION_STMT,
+    expression,
+    isLiveAtEnd: null
+  }
 }
 
 export interface FunctionStmt extends Node {
@@ -157,6 +288,18 @@ export interface FunctionStmt extends Node {
   params: Param[]
   returnType: Type
   body: Stmt[]
+  scope: Scope
+}
+
+export function functionStmt({ name, params, returnType, body, scope }: { name: Token; params: Param[]; returnType: Type; body: Stmt[]; scope: Scope }): FunctionStmt {
+  return {
+    kind: NodeKind.FUNCTION_STMT,
+    name,
+    params,
+    returnType,
+    body,
+    scope
+  }
 }
 
 export interface IfStmt extends Node {
@@ -164,30 +307,171 @@ export interface IfStmt extends Node {
   expression: Expr
   thenBranch: Stmt
   elseBranch: Stmt | null
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function ifStmt({ expression, thenBranch, elseBranch }: { expression: Expr; thenBranch: Stmt; elseBranch: Stmt | null }): IfStmt {
+  return {
+    kind: NodeKind.IF_STMT,
+    expression,
+    thenBranch,
+    elseBranch,
+    isLiveAtEnd: null
+  }
 }
 
 export interface PrintStmt extends Node {
   kind: NodeKind.PRINT_STMT
   expression: Expr
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function printStmt({ expression }: { expression: Expr }): PrintStmt {
+  return {
+    kind: NodeKind.PRINT_STMT,
+    expression,
+    isLiveAtEnd: null
+  }
 }
 
 export interface ReturnStmt extends Node {
   kind: NodeKind.RETURN_STMT
   keyword: Token
   value: Expr | null
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function returnStmt({ keyword, value }: { keyword: Token; value: Expr | null }): ReturnStmt {
+  return {
+    kind: NodeKind.RETURN_STMT,
+    keyword,
+    value,
+    isLiveAtEnd: null
+  }
 }
 
 export interface VarStmt extends Node {
   kind: NodeKind.VAR_STMT
   name: Token
   initializer: Expr
-  type: Type | null // null means 'infer from initializer'
+  type: Type | null // null means 'infer from initializer in resolver step'
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function varStmt({ name, initializer, type }: { name: Token; initializer: Expr; type: Type | null }): VarStmt {
+  return {
+    kind: NodeKind.VAR_STMT,
+    name,
+    initializer,
+    type,
+    isLiveAtEnd: null
+  }
 }
 
 export interface WhileStmt extends Node {
   kind: NodeKind.WHILE_STMT
   expression: Expr
   body: Stmt
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function whileStmt({ expression, body }: { expression: Expr; body: Stmt }): WhileStmt {
+  return {
+    kind: NodeKind.WHILE_STMT,
+    expression,
+    body,
+    isLiveAtEnd: null
+  }
+}
+
+export enum SymbolKind {
+  VARIABLE,
+  FUNCTION,
+  PARAM
+}
+
+export enum SymbolState {
+  UNRESOLVED,
+  RESOLVING,
+  RESOLVED
+}
+
+export type Symbol = VariableSymbol | FunctionSymbol | ParamSymbol
+
+export interface VariableSymbol {
+  kind: SymbolKind.VARIABLE
+  node: VarStmt
+  state: SymbolState
+  // Track global dependencies to allow topological sorting of global initialization later.
+  // This should only contain variable symbols because only variables need be initialized.
+  globalDependencies?: Set<Symbol>
+}
+
+export function variableSymbol(node: VarStmt): VariableSymbol {
+  return {
+    kind: SymbolKind.VARIABLE,
+    node,
+    state: SymbolState.UNRESOLVED
+  }
+}
+
+export interface FunctionSymbol {
+  kind: SymbolKind.FUNCTION
+  node: FunctionStmt
+  state: SymbolState
+  // Track global dependencies to allow topological sorting of global initialization later.
+  // This should only contain variable symbols because only variables need be initialized.
+  globalDependencies?: Set<Symbol>
+}
+
+export function functionSymbol(node: FunctionStmt): FunctionSymbol {
+  return {
+    kind: SymbolKind.FUNCTION,
+    node,
+    state: SymbolState.UNRESOLVED
+  }
+}
+
+export interface ParamSymbol {
+  kind: SymbolKind.PARAM
+  param: Param
+  state: SymbolState
+}
+
+export function paramSymbol(param: Param): ParamSymbol {
+  return {
+    kind: SymbolKind.PARAM,
+    param,
+    state: SymbolState.UNRESOLVED
+  }
+}
+
+export class Scope {
+  private readonly parent: Scope | null
+  private readonly map: Map<string, Symbol>
+
+  constructor(parent: Scope | null) {
+    this.parent = parent
+    this.map = new Map()
+  }
+
+  define(name: string, symbol: Symbol): void {
+    this.map.set(name, symbol)
+  }
+
+  hasDirect(name: string): boolean {
+    return this.map.has(name)
+  }
+
+  lookup(name: string): Symbol | null {
+    if (this.map.has(name)) {
+      return this.map.get(name)!
+    }
+    if (this.parent) {
+      return this.parent.lookup(name)
+    }
+    return null
+  }
 }
 
 function typeToSExpr(type: Type): string {
@@ -209,6 +493,21 @@ function typeToSExpr(type: Type): string {
     }
   }
   return out
+}
+
+export function typeToString(type: Type): string {
+  switch (type.category) {
+    case TypeCategory.ARRAY: {
+      return `[${typeToString(type.elementType)}; ${type.length}]`
+    }
+    case TypeCategory.INT:
+    case TypeCategory.FLOAT:
+    case TypeCategory.BYTE:
+    case TypeCategory.BOOL:
+    case TypeCategory.VOID: {
+      return TypeCategory[type.category].toLowerCase()
+    }
+  }
 }
 
 export function astToSExpr(node: Node): string {

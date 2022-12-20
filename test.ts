@@ -38,7 +38,7 @@ describe("parser", () => {
     expect(errors).toEqual(expectedErrors)
 
     let sexpr = "("
-    output.forEach((stmt, i) => {
+    output.topLevelStatements.forEach((stmt, i) => {
       if (i > 0) sexpr += " "
       sexpr += ast.astToSExpr(stmt)
     })

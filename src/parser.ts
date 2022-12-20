@@ -5,7 +5,31 @@ import * as ast from './nodes'
 
 class ParseError extends Error {}
 
-export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] {
+export interface Context {
+  global: ast.Scope
+  topLevelStatements: ast.TopStmt[]
+}
+
+// 1. Construct AST from stream of tokens
+// 2. Create scopes for blocks and functions
+// 3. Emplace symbol declarations into scopes
+// 4. Ensure no duplicate symbols in same scope
+export function parse(tokens: Token[], reportError: ReportError): Context {
+  const global = new ast.Scope(null)
+  const scopes = [global]
+
+  function peekScope(): ast.Scope {
+    return scopes[scopes.length - 1]
+  }
+
+  function pushScope() {
+    scopes.push(new ast.Scope(peekScope()))
+  }
+
+  function popScope(): ast.Scope {
+    return scopes.pop()!
+  }
+
   let current = 0
 
   // advances and returns true if next token matches input token type,
@@ -46,7 +70,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
   }
 
   function parseError(msg: string): ParseError {
-    reportError(peek().line(), msg)
+    return parseErrorForToken(peek(), msg)
+  }
+
+  function parseErrorForToken(token: Token, msg: string): ParseError {
+    reportError(token.line(), msg)
     return new ParseError(msg)
   }
 
@@ -120,15 +148,35 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     }
     
     consume(TokenType.LEFT_BRACE, "Expect '{' before function body.")
+    pushScope()
+    params.forEach((param) => {
+      const scope = peekScope()
+      if (scope.hasDirect(param.name.lexeme)) {
+        // Don't throw; Function body will be parsed + resolved as if duplicate doesn't exist.
+        // Calls will still be parsed + resolved with arity including duplicate.
+        parseErrorForToken(param.name, `'${param.name.lexeme}' is already declared in this scope.`)
+      } else {
+        scope.define(param.name.lexeme, ast.paramSymbol(param))
+      }
+    })
     const body = block()
+    const scope = popScope()
     
-    return {
-      kind: ast.NodeKind.FUNCTION_STMT,
+    const node = ast.functionStmt({
       name,
       params,
       returnType,
-      body
+      body,
+      scope
+    })
+    const outerScope = peekScope()
+    if (outerScope.hasDirect(name.lexeme)) {
+      // Throw; we want to ignore this function and synchronize to next statement
+      throw parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
+    } else {
+      outerScope.define(name.lexeme, ast.functionSymbol(node))
     }
+    return node
   }
 
   function varDecl(): ast.VarStmt {
@@ -142,12 +190,18 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     consume(TokenType.EQUAL, "Expect '=' after variable declaration.")
     const expr = expression()
     consume(TokenType.SEMICOLON, "Expect ';' after statement.")
-    return {
-      kind: ast.NodeKind.VAR_STMT,
+    const node = ast.varStmt({
       name,
       initializer: expr,
       type: varType
+    })
+    const scope = peekScope()
+    if (scope.hasDirect(name.lexeme)) {
+      parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
+    } else {
+      scope.define(name.lexeme, ast.variableSymbol(node))
     }
+    return node
   }
 
   function statement(): ast.Stmt {
@@ -164,18 +218,20 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
       return returnStmt()
     }
     if (match(TokenType.LEFT_BRACE)) {
-      return {
-        kind: ast.NodeKind.BLOCK_STMT,
-        statements: block()
-      }
+      pushScope()
+      const statements = block()
+      const scope = popScope()
+      return ast.blockStmt({
+        statements,
+        scope
+      })
     }
 
     const expr = expression()
     consume(TokenType.SEMICOLON, "Expect ';' after expression statement.")
-    return {
-      kind: ast.NodeKind.EXPRESSION_STMT,
+    return ast.expressionStmt({
       expression: expr
-    }
+    })
   }
 
   function ifStmt(): ast.IfStmt {
@@ -188,39 +244,35 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     if (match(TokenType.ELSE)) {
       elseBranch = statement()
     }
-    return {
-      kind: ast.NodeKind.IF_STMT,
+    return ast.ifStmt({
       expression: expr,
       thenBranch,
       elseBranch
-    }
+    })
   }
 
   function printStmt(): ast.PrintStmt {
     const expr = expression()
     consume(TokenType.SEMICOLON, "expect ';' after print statement.")
-    return {
-      kind: ast.NodeKind.PRINT_STMT,
+    return ast.printStmt({
       expression: expr
-    }
+    })
   }
 
   function returnStmt(): ast.ReturnStmt {
     const keyword = previous()
     if (match(TokenType.SEMICOLON)) {
-      return {
-        kind: ast.NodeKind.RETURN_STMT,
+      return ast.returnStmt({
         keyword,
         value: null
-      }
+      })
     }
     const value = expression()
     consume(TokenType.SEMICOLON, "Expect ';' after return statement.")
-    return {
-      kind: ast.NodeKind.RETURN_STMT,
+    return ast.returnStmt({
       keyword,
       value
-    }
+    })
   }
 
   function whileStmt(): ast.WhileStmt {
@@ -229,11 +281,10 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     consume(TokenType.RIGHT_PAREN, "Expect ')' after loop condition.")
 
     const body = statement()
-    return {
-      kind: ast.NodeKind.WHILE_STMT,
+    return ast.whileStmt({
       expression: condition,
       body
-    }
+    })
   }
 
   function block(): ast.Stmt[] {
@@ -293,13 +344,14 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
   function exprAssignment(): ast.Expr {
     let expr = exprOr()
     if (match(TokenType.EQUAL)) {
+      const operator = previous()
       const right = exprAssignment()
       if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR) {
-        return {
-          kind: ast.NodeKind.ASSIGN_EXPR,
+        return ast.assignExpr({
+          operator,
           left: expr,
           right
-        }
+        })
       }
       // No need to panic (throw error) and synchronize.
       // Report error; it's still valuable to continue parsing
@@ -315,12 +367,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.BAR_BAR)) {
       const operator = previous()
       const right = exprAnd()
-      expr = {
-        kind: ast.NodeKind.LOGICAL_EXPR,
+      expr = ast.logicalExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -330,12 +381,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.AMP_AMP)) {
       const operator = previous()
       const right = exprEquality()
-      expr = {
-        kind: ast.NodeKind.LOGICAL_EXPR,
+      expr = ast.logicalExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -345,12 +395,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.EQUAL_EQUAL) || match(TokenType.BANG_EQUAL)) {
       const operator = previous()
       const right = exprComparison()
-      expr = {
-        kind: ast.NodeKind.BINARY_EXPR,
+      expr = ast.binaryExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -360,12 +409,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.GREATER) || match(TokenType.GREATER_EQUAL) || match(TokenType.LESS) || match(TokenType.LESS_EQUAL)) {
       const operator = previous()
       const right = exprTerm()
-      expr = {
-        kind: ast.NodeKind.BINARY_EXPR,
+      expr = ast.binaryExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -375,12 +423,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.MINUS) || match(TokenType.PLUS)) {
       const operator = previous()
       const right = exprFactor()
-      expr = {
-        kind: ast.NodeKind.BINARY_EXPR,
+      expr = ast.binaryExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -390,12 +437,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     while (match(TokenType.SLASH) || match(TokenType.STAR)) {
       const operator = previous()
       const right = exprUnary()
-      expr = {
-        kind: ast.NodeKind.BINARY_EXPR,
+      expr = ast.binaryExpr({
         left: expr,
         operator,
         right
-      }
+      })
     }
     return expr
   }
@@ -404,11 +450,10 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     if (match(TokenType.BANG) || match(TokenType.MINUS)) {
       const operator = previous()
       const right = exprUnary()
-      return {
-        kind: ast.NodeKind.UNARY_EXPR,
+      return ast.unaryExpr({
         operator,
         right
-      }
+      })
     }
     return exprCall()
   }
@@ -427,67 +472,60 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
         args.push(arg)
       }
       consume(TokenType.RIGHT_PAREN, "Expect ')' after arguments.")
-      expr = {
-        kind: ast.NodeKind.CALL_EXPR,
+      expr = ast.callExpr({
         callee: expr,
         paren,
         args
-      }
+      })
     } 
     // can have any number of indexes
     while (match(TokenType.LEFT_BRACKET)) {
       const bracket = previous()
       const index = expression()
       consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.")
-      expr = {
-        kind: ast.NodeKind.INDEX_EXPR,
+      expr = ast.indexExpr({
         callee: expr,
         bracket,
         index
-      }
+      })
     }
     return expr
   }
 
   function exprPrimary(): ast.Expr {
     if (match(TokenType.TRUE) || match(TokenType.FALSE)) {
-      return {
-        kind: ast.NodeKind.LITERAL_EXPR,
+      return ast.literalExpr({
         value: previous().type === TokenType.TRUE ? true : false,
         type: ast.BoolType
-      }
+      })
     }
     if (match(TokenType.NUMBER)) {
-      return {
-        kind: ast.NodeKind.LITERAL_EXPR,
+      return ast.literalExpr({
         value: previous().literal,
         type: ast.IntType
-      }
+      })
     }
     if (match(TokenType.NUMBER_DECIMAL)) {
-      return {
-        kind: ast.NodeKind.LITERAL_EXPR,
+      return ast.literalExpr({
         value: previous().literal,
         type: ast.FloatType
-      }
+      })
     }
     if (match(TokenType.STRING)) {
       // TODO fixme
       throw parseError("Strings not yet supported")
     }
     if (match(TokenType.IDENTIFIER)) {
-      return {
-        kind: ast.NodeKind.VARIABLE_EXPR,
+      return ast.variableExpr({
         name: previous()
-      }
+      })
     }
     if (match(TokenType.LEFT_PAREN)) {
       const expr = expression()
       consume(TokenType.RIGHT_PAREN, "Expect ')' matching '('.")
-      return {
-        kind: ast.NodeKind.GROUP_EXPR,
+      return ast.groupExpr({
         expression: expr
-      }
+      })
     }
     if (match(TokenType.LEFT_BRACKET)) {
       if (!check(TokenType.RIGHT_BRACKET)) {
@@ -520,11 +558,10 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
       consume(TokenType.LEFT_PAREN, "Expect '(' after type in cast expression.")
       const value = expression()
       consume(TokenType.RIGHT_PAREN, "Expect ')' after cast expression.")
-      return {
-        kind: ast.NodeKind.CAST_EXPR,
+      return ast.castExpr({
         type: castType,
         value
-      }
+      })
     } catch (e) {
       // errors in the above are likely not malformed cast expressions, 
       // they are probably not expressions at all
@@ -546,5 +583,8 @@ export function parse(tokens: Token[], reportError: ReportError): ast.TopStmt[] 
     }
   }
 
-  return topLevelStatements
+  return {
+    global, 
+    topLevelStatements
+  }
 }

@@ -402,16 +402,15 @@ export interface VariableSymbol {
   kind: SymbolKind.VARIABLE
   node: VarStmt
   state: SymbolState
-  // Track global dependencies to allow topological sorting of global initialization later.
-  // This should only contain variable symbols because only variables need be initialized.
-  globalDependencies?: Set<Symbol>
+  isGlobal: boolean
 }
 
-export function variableSymbol(node: VarStmt): VariableSymbol {
+export function variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol {
   return {
     kind: SymbolKind.VARIABLE,
     node,
-    state: SymbolState.UNRESOLVED
+    state: SymbolState.UNRESOLVED,
+    isGlobal,
   }
 }
 
@@ -419,16 +418,13 @@ export interface FunctionSymbol {
   kind: SymbolKind.FUNCTION
   node: FunctionStmt
   state: SymbolState
-  // Track global dependencies to allow topological sorting of global initialization later.
-  // This should only contain variable symbols because only variables need be initialized.
-  globalDependencies?: Set<Symbol>
 }
 
 export function functionSymbol(node: FunctionStmt): FunctionSymbol {
   return {
     kind: SymbolKind.FUNCTION,
     node,
-    state: SymbolState.UNRESOLVED
+    state: SymbolState.UNRESOLVED,
   }
 }
 

@@ -238,22 +238,48 @@ export function resolve(context: Context, reportError: ReportError) {
           resolveError(op.name, `Declaration of '${op.name.lexeme}' is cyclic. Defined here:\n${varSymbol.node.name.lineStr()}`)
           op.resolvedType = ast.VoidType
         } else {
-          switch (symbol.kind) {
-            case ast.SymbolKind.FUNCTION: {
-              // TODO: Either make `CallExpr` only use names and not sub-expressions, or add a function type
+          let resolveTypeFromSymbol = true
+          if (symbol.state === ast.SymbolState.UNRESOLVED) {
+            // Globals can be declared and used out-of-order.
+            const fnSymbol = symbol.kind === ast.SymbolKind.FUNCTION ? symbol as ast.FunctionSymbol : null
+            const varSymbol = symbol.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
+            const isGlobal = fnSymbol !== null || (varSymbol !== null && varSymbol.isGlobal)
+            if (isGlobal) {
+              // Resolve the out-of-order global declaration. This is needed to:
+              // 1. Resolve type of this variable expression.
+              // 2. Detect cyclic declarations in case this variable expression
+              //    is part of a global's initializer.
+              //
+              // TODO: Don't walk tree twice if resolving the same node later on.
+              if (fnSymbol) {
+                resolveNode(fnSymbol.node, true)
+              } else {
+                resolveNode(varSymbol!.node, true)
+              }
+            } else {
+              resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
               op.resolvedType = ast.VoidType
-              break
+              resolveTypeFromSymbol = false
             }
-            case ast.SymbolKind.PARAM: {
-              op.resolvedType = (symbol as ast.ParamSymbol).param.type
-              break
-            }
-            case ast.SymbolKind.VARIABLE: {
-              const varSymbol = symbol as ast.VariableSymbol
-              // We should've filled this in after resolving the declaration
-              console.assert(varSymbol.node.type !== null)
-              op.resolvedType = varSymbol.node.type
-              break
+          }
+          if (resolveTypeFromSymbol) {
+            switch (symbol.kind) {
+              case ast.SymbolKind.FUNCTION: {
+                // TODO: Either make `CallExpr` only use names and not sub-expressions, or add a function type
+                op.resolvedType = ast.VoidType
+                break
+              }
+              case ast.SymbolKind.PARAM: {
+                op.resolvedType = (symbol as ast.ParamSymbol).param.type
+                break
+              }
+              case ast.SymbolKind.VARIABLE: {
+                const varSymbol = symbol as ast.VariableSymbol
+                // We should've filled this in after resolving the declaration
+                console.assert(varSymbol.node.type !== null)
+                op.resolvedType = varSymbol.node.type
+                break
+              }
             }
           }
         }

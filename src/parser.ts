@@ -199,7 +199,7 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
     if (scope.hasDirect(name.lexeme)) {
       parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
     } else {
-      scope.define(name.lexeme, ast.variableSymbol(node))
+      scope.define(name.lexeme, ast.variableSymbol(node, scope === global))
     }
     return node
   }

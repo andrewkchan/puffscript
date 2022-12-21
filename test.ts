@@ -447,4 +447,128 @@ describe("type checking", () => {
       "17: All control paths for bar2 must return a value of type 'int'."
     ])
   })
+
+  test("Global scope", () => {
+    expectResolveErrors(`
+    // ok for dependent globals to be declared out-of-order
+    var x = y;
+    var y = 1;
+    // undeclared symbol is still an error
+    var z1 = missing;
+    var z2 = x * (y - missing);
+    // missing global is reported in function body
+    def foo() int {
+      missing = 5; // implicit declaration not allowed
+      return missing;
+    }
+    var z3 = foo();
+    `,
+    [
+      "5: Undefined symbol 'missing'.",
+      "6: Undefined symbol 'missing'.",
+      "6: Invalid operand types for binary operator '-'.",
+      "9: Undefined symbol 'missing'.",
+      "9: Invalid operand types for assignment operator '='.",
+      "10: Undefined symbol 'missing'.",
+      "10: Expected a value of type 'int'.",
+    ])
+  })
+
+  test("Function scope", () => {
+    expectResolveErrors(`
+    def inner() {
+      var inner1 = 1;
+      var outerAndInner = true;
+      // cannot refer to vars declared only inside outer
+      print outerBeforeInner;
+      // ok
+      print inner1;
+      // wrong type
+      print outerAndInner == 1.5;
+      // ok
+      print outerAndInner == true;
+    }
+    def outer() {
+      var outerAndInner = 1.5;
+      var outerBeforeInner = 1;
+      inner();
+      // cannot refer to vars declared only inside inner
+      print inner1;
+      // ok
+      print outerBeforeInner;
+      // ok
+      var outerAfterInner = 2;
+      print outerAfterInner;
+      // ok
+      print outerAndInner == 1.5;
+      // wrong type
+      print outerAndInner == true;
+    }
+    `,
+    [
+      "5: Undefined symbol 'outerBeforeInner'.",
+      "9: Cannot compare bool to float.",
+      "18: Undefined symbol 'inner1'.",
+      "27: Cannot compare float to bool."
+    ])
+  })
+
+  test("Block scope", () => {
+    expectResolveErrors(`
+    def main() {
+      var a = 5.0;
+      var b = 2.0;
+      print a == true; // wrong type
+      print a == 5.0; // ok
+      print x; // undefined symbol
+      {
+        var a = true;
+        var x = b;
+        print a == true; // ok
+        print a == 5.0; // wrong type
+        print x; // ok
+        print x == b; // ok
+        print x == 5.0; // ok
+        print x == a; // wrong type
+      }
+      print a == true; // wrong type
+      print a == 5.0; // ok
+      print x; // undefined symbol
+    }
+    `,
+    [
+      "4: Cannot compare float to bool.",
+      "6: Undefined symbol 'x'.",
+      "11: Cannot compare bool to float.",
+      "15: Cannot compare float to bool.",
+      "17: Cannot compare float to bool.",
+      "19: Undefined symbol 'x'.",
+    ])
+  })
+
+  test("Lexical scope", () => {
+    expectResolveErrors(`
+    def main() {
+      var a = 1;
+      var b = c; // error to reference locals out-of-order
+      var c = a; // ok
+      {
+        var x = a; // ok
+        var y = d; // error
+        var z = x; // ok
+      }
+      var d = c; // ok
+      {
+        var p = x; // error
+        var q = d; // ok
+        var r = c; // ok
+      }
+    }
+    `,
+    [
+      "3: Undefined symbol 'c'.",
+      "7: Undefined symbol 'd'.",
+      "12: Undefined symbol 'x'."
+    ])
+  })
 })

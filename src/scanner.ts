@@ -77,7 +77,8 @@ export function scanTokens(source: string, reportError: ReportError): Array<Toke
           // Check if it's also a keyword and set token type accordingly
           keyword:
           for (let k = TokenType.BYTE; k <= TokenType.WHILE; k++) {
-            if (match(source, current, TokenPattern[k])) {
+            const keywordMatch = match(source, current, TokenPattern[k])
+            if (keywordMatch !== null && keywordMatch[0] === lexeme) {
               t = k
               break keyword
             }

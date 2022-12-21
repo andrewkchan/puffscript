@@ -435,14 +435,15 @@ export function functionSymbol(node: FunctionStmt): FunctionSymbol {
 export interface ParamSymbol {
   kind: SymbolKind.PARAM
   param: Param
-  state: SymbolState
+  // Param symbols don't need resolving as their type is always specified
+  state: SymbolState.RESOLVED
 }
 
 export function paramSymbol(param: Param): ParamSymbol {
   return {
     kind: SymbolKind.PARAM,
     param,
-    state: SymbolState.UNRESOLVED
+    state: SymbolState.RESOLVED
   }
 }
 

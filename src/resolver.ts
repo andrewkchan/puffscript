@@ -113,14 +113,14 @@ export function resolve(context: Context, reportError: ReportError) {
           const callee = op.callee as ast.VariableExpr
           const symbol = peekScope().lookup(callee.name.lexeme)
           if (!symbol) {
-            resolveError(callee.name, `Undefined symbol '${callee.name.lexeme}'.`)
+            // We already reported 'Undefined symbol' error earlier when resolving the callee VariableExpr
           } else if (symbol.kind !== ast.SymbolKind.FUNCTION) {
             resolveError(callee.name, `Cannot call this type.`)
           } else {
             const fn = symbol as ast.FunctionSymbol
             // Check arity and types of arguments
             if (op.args.length !== fn.node.params.length) {
-              resolveError(op.paren, `Expected ${fn.node.params.length} arguments but got ${op.args.length}.`)
+              resolveError(op.paren, `Expected ${fn.node.params.length} arguments but got ${op.args.length} in call to ${fn.node.name.lexeme}.`)
             } else {
               for (let i = 0; i < op.args.length; i++) {
                 const arg = op.args[i]
@@ -129,7 +129,7 @@ export function resolve(context: Context, reportError: ReportError) {
                 if (!ast.isEqual(arg.resolvedType!, param.type)) {
                   const paramTypeStr = ast.typeToString(param.type)
                   const argTypeStr = ast.typeToString(arg.resolvedType!)
-                  resolveError(op.paren, `Expected type '${paramTypeStr}' but got '${argTypeStr}'.`)
+                  resolveError(op.paren, `Expected type '${paramTypeStr}' but got '${argTypeStr}' in call to ${fn.node.name.lexeme}.`)
                 }
               }
             }
@@ -230,7 +230,7 @@ export function resolve(context: Context, reportError: ReportError) {
         const op = node as ast.VariableExpr
         const symbol = peekScope().lookup(op.name.lexeme)
         if (symbol === null) {
-          resolveError(op.name, `Undefined variable '${op.name.lexeme}'.`)
+          resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
           op.resolvedType = ast.VoidType
         } else if (symbol.state == ast.SymbolState.RESOLVING) {
           const varSymbol = symbol as ast.VariableSymbol
@@ -238,10 +238,24 @@ export function resolve(context: Context, reportError: ReportError) {
           resolveError(op.name, `Declaration of '${op.name.lexeme}' is cyclic. Defined here:\n${varSymbol.node.name.lineStr()}`)
           op.resolvedType = ast.VoidType
         } else {
-          const varSymbol = symbol as ast.VariableSymbol
-          // We should've filled this in after resolving the declaration
-          console.assert(varSymbol.node.type !== null)
-          op.resolvedType = varSymbol.node.type
+          switch (symbol.kind) {
+            case ast.SymbolKind.FUNCTION: {
+              // TODO: Either make `CallExpr` only use names and not sub-expressions, or add a function type
+              op.resolvedType = ast.VoidType
+              break
+            }
+            case ast.SymbolKind.PARAM: {
+              op.resolvedType = (symbol as ast.ParamSymbol).param.type
+              break
+            }
+            case ast.SymbolKind.VARIABLE: {
+              const varSymbol = symbol as ast.VariableSymbol
+              // We should've filled this in after resolving the declaration
+              console.assert(varSymbol.node.type !== null)
+              op.resolvedType = varSymbol.node.type
+              break
+            }
+          }
         }
         break
       }
@@ -299,7 +313,7 @@ export function resolve(context: Context, reportError: ReportError) {
         if (missingReturn) {
           resolveError(
             op.name, 
-            `All control paths for ${op.name.lexeme} must return a value of type "${ast.typeToString(op.returnType)}".`
+            `All control paths for ${op.name.lexeme} must return a value of type '${ast.typeToString(op.returnType)}'.`
           )
         }
         popFunction()
@@ -311,7 +325,7 @@ export function resolve(context: Context, reportError: ReportError) {
         resolveNode(op.expression, isLiveAtEnd)
         resolveNode(op.thenBranch, isLiveAtEnd)
         const isLiveAfterThen = !!op.thenBranch.isLiveAtEnd
-        let isLiveAfterElse = false
+        let isLiveAfterElse = isLiveAtEnd
         if (op.elseBranch !== null) {
           resolveNode(op.elseBranch, isLiveAtEnd)
           isLiveAfterElse = !!op.elseBranch.isLiveAtEnd
@@ -335,11 +349,11 @@ export function resolve(context: Context, reportError: ReportError) {
           resolveNode(value, isLiveAtEnd)
           console.assert(value.resolvedType !== null)
           if (!ast.isEqual(inFunction.returnType, value.resolvedType!)) {
-            resolveError(op.keyword, `Expected a value of type "${ast.typeToString(inFunction.returnType)}".`)
+            resolveError(op.keyword, `Expected a value of type '${ast.typeToString(inFunction.returnType)}'.`)
           }
         } else {
           if (!ast.isEqual(inFunction.returnType, ast.VoidType)) {
-            resolveError(op.keyword, `Expected a value of type "${ast.typeToString(inFunction.returnType)}".`)
+            resolveError(op.keyword, `Expected a value of type '${ast.typeToString(inFunction.returnType)}'.`)
           }
         }
         op.isLiveAtEnd = false
@@ -366,7 +380,7 @@ export function resolve(context: Context, reportError: ReportError) {
           // TODO: allow implicit conversions when possible
           resolveError(
             op.name, 
-            `Cannot assign type ${ast.typeToString(op.type)} to type ${ast.typeToString(op.initializer.resolvedType!)}`
+            `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
           )
         }
         symbol.state = ast.SymbolState.RESOLVED

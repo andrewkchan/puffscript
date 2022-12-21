@@ -30,10 +30,16 @@ export class Token {
     let start = 0
     for (let i = 0; i < this.offset; i++) {
       if (this.source.charAt(i) == '\n') {
-        start = i
+        start = i + 1
       }
     }
-    return this.source.substring(start+1, this.offset+1)
+    const snippet = this.source.substring(start, this.offset + this.lexeme.length + 1)
+    let ptr = ""
+    for (let i = 0; i < this.offset - start; i++) {
+      ptr += " "
+    }
+    ptr += "^"
+    return `${snippet}\n${ptr}`
   }
 
   toString(): string {
@@ -71,7 +77,7 @@ export function scanTokens(source: string, reportError: ReportError): Array<Toke
           // Check if it's also a keyword and set token type accordingly
           keyword:
           for (let k = TokenType.BYTE; k <= TokenType.WHILE; k++) {
-            if (lexeme.match(TokenPattern[k])) {
+            if (match(source, current, TokenPattern[k])) {
               t = k
               break keyword
             }

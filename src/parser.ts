@@ -334,7 +334,7 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
     if (match(TokenType.BOOL)) {
       return ast.BoolType
     }
-    throw parseError(`Invalid type specifier starting at '${peek().lexeme}' in line:\n'${peek().lineStr()}'`)
+    throw parseError(`Invalid type specifier starting at '${peek().lexeme}'.`)
   }
 
   function expression(): ast.Expr {
@@ -541,7 +541,7 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
       throw parseError("Arrays not yet supported")
     }
 
-    try {
+    if (check(TokenType.INT) || check(TokenType.FLOAT) || check(TokenType.BYTE) || check(TokenType.BOOL)) {
       // cast expression
       const castType = type()
       switch (castType.category) {
@@ -562,11 +562,8 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
         type: castType,
         value
       })
-    } catch (e) {
-      // errors in the above are likely not malformed cast expressions, 
-      // they are probably not expressions at all
-      throw parseError("Expect expression.")
     }
+    throw parseError("Expect expression.")
   }
 
   const topLevelStatements: ast.TopStmt[] = []

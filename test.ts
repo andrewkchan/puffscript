@@ -448,6 +448,27 @@ describe("type checking", () => {
     ])
   })
 
+  test("Return from void function", () => {
+    expectResolveErrors(`
+    def foobar() {
+      return 1; // error
+    }
+    def foo() {
+      print 1234;
+      return;
+    }
+    def bar(x int) {
+      if (x) {
+        return;
+      }
+      foo();
+    }
+    `,
+    [
+      "2: Expected a value of type 'void'."
+    ])
+  })
+
   test("Global scope", () => {
     expectResolveErrors(`
     // ok for dependent globals to be declared out-of-order

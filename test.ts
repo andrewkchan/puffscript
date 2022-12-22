@@ -497,24 +497,28 @@ describe("type checking", () => {
 
   test("Function scope", () => {
     expectResolveErrors(`
-    def inner() {
+    def inner(outerAndInnerParam bool, innerParam int) {
       var inner1 = 1;
       var outerAndInner = true;
       // cannot refer to vars declared only inside outer
       print outerBeforeInner;
+      print outerParam;
       // ok
       print inner1;
       // wrong type
       print outerAndInner == 1.5;
+      print outerAndInnerParam == 0.99;
       // ok
       print outerAndInner == true;
+      print outerAndInnerParam == true;
     }
-    def outer() {
+    def outer(outerAndInnerParam float, outerParam int) {
       var outerAndInner = 1.5;
       var outerBeforeInner = 1;
-      inner();
+      inner(true, 2);
       // cannot refer to vars declared only inside inner
       print inner1;
+      print innerParam;
       // ok
       print outerBeforeInner;
       // ok
@@ -522,15 +526,21 @@ describe("type checking", () => {
       print outerAfterInner;
       // ok
       print outerAndInner == 1.5;
+      print outerAndInnerParam == 0.99;
       // wrong type
       print outerAndInner == true;
+      print outerAndInnerParam == true;
     }
     `,
     [
       "5: Undefined symbol 'outerBeforeInner'.",
-      "9: Cannot compare bool to float.",
-      "18: Undefined symbol 'inner1'.",
-      "27: Cannot compare float to bool."
+      "6: Undefined symbol 'outerParam'.",
+      "10: Cannot compare bool to float.",
+      "11: Cannot compare bool to float.",
+      "21: Undefined symbol 'inner1'.",
+      "22: Undefined symbol 'innerParam'.",
+      "32: Cannot compare float to bool.",
+      "33: Cannot compare float to bool."
     ])
   })
 
@@ -590,6 +600,29 @@ describe("type checking", () => {
       "3: Undefined symbol 'c'.",
       "7: Undefined symbol 'd'.",
       "12: Undefined symbol 'x'."
+    ])
+  })
+
+  test("Scope change due to out-of-order resolution", () => {
+    expectResolveErrors(`
+    def foo(y int) int {
+      var localAndGlobal = true;
+      var local = 1;
+      var x = globalVar1 + y;
+      var z = globalVar2;
+      if (globalVar3) {
+        return x + y;
+      }
+      return x + z;
+    }
+    var globalVar1 = int(y);
+    var globalVar2 = int(local);
+    var globalVar3 = localAndGlobal == 3.14;
+    var localAndGlobal = 3.14;
+    `,
+    [
+      "11: Undefined symbol 'y'.",
+      "12: Undefined symbol 'local'."
     ])
   })
 

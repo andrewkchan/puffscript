@@ -390,17 +390,11 @@ export enum SymbolKind {
   PARAM
 }
 
-export enum SymbolState {
-  UNRESOLVED,
-  RESOLVED
-}
-
 export type Symbol = VariableSymbol | FunctionSymbol | ParamSymbol
 
 export interface VariableSymbol {
   kind: SymbolKind.VARIABLE
   node: VarStmt
-  state: SymbolState
   isGlobal: boolean
 }
 
@@ -408,37 +402,31 @@ export function variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol
   return {
     kind: SymbolKind.VARIABLE,
     node,
-    state: SymbolState.UNRESOLVED,
-    isGlobal,
+    isGlobal
   }
 }
 
 export interface FunctionSymbol {
   kind: SymbolKind.FUNCTION
   node: FunctionStmt
-  state: SymbolState
 }
 
 export function functionSymbol(node: FunctionStmt): FunctionSymbol {
   return {
     kind: SymbolKind.FUNCTION,
     node,
-    state: SymbolState.UNRESOLVED,
   }
 }
 
 export interface ParamSymbol {
   kind: SymbolKind.PARAM
   param: Param
-  // Param symbols don't need resolving as their type is always specified
-  state: SymbolState.RESOLVED
 }
 
 export function paramSymbol(param: Param): ParamSymbol {
   return {
     kind: SymbolKind.PARAM,
     param,
-    state: SymbolState.RESOLVED
   }
 }
 

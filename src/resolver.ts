@@ -12,7 +12,7 @@ class ResolveError extends Error {}
 // 5. Ensure no cyclic variable declarations
 export function resolve(context: Context, reportError: ReportError) {
   const global = context.global
-  const scopes = [global]
+  let scopes = [global]
   function peekScope(): ast.Scope {
     return scopes[scopes.length - 1]
   }
@@ -23,7 +23,7 @@ export function resolve(context: Context, reportError: ReportError) {
     return scopes.pop()!
   }
 
-  const functionStack: ast.FunctionStmt[] = []
+  let functionStack: ast.FunctionStmt[] = []
   function peekFunction(): ast.FunctionStmt | null {
     return functionStack.length > 0 ? functionStack[functionStack.length - 1] : null
   }
@@ -35,24 +35,21 @@ export function resolve(context: Context, reportError: ReportError) {
   }
 
   // Keeps track of all AST nodes (including from non-tree dependency edges)
-  // visited starting from a top-level statement.
+  // walked starting from a top-level statement.
   //
   // Currently used only for symbol cycle detection.
-  const visitedCount: Map<ast.Node, number> = new Map();
-  const visited: ast.Node[] = []
+  const walkedSet: Set<ast.Node> = new Set();
+  const walked: ast.Node[] = []
   function preVisit(node: ast.Node) {
-    const count = visitedCount.get(node) ?? 0
-    visitedCount.set(node, count + 1)
-    visited.push(node)
+    walkedSet.add(node)
+    walked.push(node)
   }
   function postVisit(node: ast.Node) {
-    const count = visitedCount.get(node) ?? 0
-    visitedCount.set(node, count - 1)
-    if (count <= 1) {
-      visitedCount.delete(node)
-    }
-    visited.pop()
+    walkedSet.delete(node)
+    walked.pop()
   }
+
+  const visited: Set<ast.Node> = new Set();
 
   function resolveError(token: Token, msg: string): ResolveError {
     reportError(token.line(), msg)
@@ -60,6 +57,10 @@ export function resolve(context: Context, reportError: ReportError) {
   }
 
   function resolveNode(node: ast.Node, isLiveAtEnd: boolean): void {
+    if (visited.has(node)) {
+      return
+    }
+    visited.add(node)
     preVisit(node)
     switch (node.kind) {
       // expressions
@@ -260,7 +261,7 @@ export function resolve(context: Context, reportError: ReportError) {
           const varSymbol = symbol?.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
           const symbolDecl = fnSymbol?.node ?? varSymbol?.node
 
-          if (symbol.state === ast.SymbolState.UNRESOLVED) {
+          if (symbolDecl && !visited.has(symbolDecl)) {
             // Globals can be declared and used out-of-order.
             const isGlobal = fnSymbol !== null || (varSymbol !== null && varSymbol.isGlobal)
             if (isGlobal) {
@@ -268,16 +269,20 @@ export function resolve(context: Context, reportError: ReportError) {
               // 1. Resolve type of this variable expression.
               // 2. Detect cyclic declarations in case this variable expression
               //    is part of a global's initializer.
-              //
-              // TODO: Don't walk tree twice if resolving the same node later on.
-              // Use `symbol.dependencies` cache.
+              const oldScopes = scopes
+              const oldFunctionStack = functionStack
+              // Reset stacks since we're following non-tree edge back to top-level
+              scopes = [global]
+              functionStack = []
               resolveNode(symbolDecl!, true)
+              scopes = oldScopes
+              functionStack = oldFunctionStack
             } else {
               resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
               op.resolvedType = ast.VoidType
               resolveTypeFromSymbol = false
             }
-          } else if (symbolDecl && visitedCount.has(symbolDecl)) {
+          } else if (symbolDecl && walkedSet.has(symbolDecl)) {
             // Detect cyclic variable declarations (declarations using this variable expr in initializer).
             // Note `symbolDecl` may not be the cylic variable in the following case:
             // V1 -----> F1 -----> V2
@@ -290,9 +295,9 @@ export function resolve(context: Context, reportError: ReportError) {
             if (symbolDecl.kind === ast.NodeKind.VAR_STMT) {
               cyclicVar = symbolDecl
             } else {
-              for (let i = visited.length - 1; visited[i] !== symbolDecl; i--) {
-                if (visited[i].kind === ast.NodeKind.VAR_STMT) {
-                  cyclicVar = visited[i] as ast.VarStmt
+              for (let i = walked.length - 1; walked[i] !== symbolDecl; i--) {
+                if (walked[i].kind === ast.NodeKind.VAR_STMT) {
+                  cyclicVar = walked[i] as ast.VarStmt
                   break
                 }
               }
@@ -355,8 +360,6 @@ export function resolve(context: Context, reportError: ReportError) {
       case ast.NodeKind.FUNCTION_STMT: {
         const op = node as ast.FunctionStmt
         const symbol = peekScope().lookup(op.name.lexeme)! as ast.FunctionSymbol
-        // No intermediate `resolving` state for functions to allow recursion
-        symbol.state = ast.SymbolState.RESOLVED
 
         pushScope(op.scope)
         pushFunction(op)
@@ -429,7 +432,6 @@ export function resolve(context: Context, reportError: ReportError) {
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         const symbol = peekScope().lookup(op.name.lexeme)! as ast.VariableSymbol
-        symbol.state = ast.SymbolState.RESOLVED
         resolveNode(op.initializer, isLiveAtEnd)
         console.assert(op.initializer.resolvedType !== null)
         if (op.type === null) {

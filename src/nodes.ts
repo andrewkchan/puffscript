@@ -392,7 +392,6 @@ export enum SymbolKind {
 
 export enum SymbolState {
   UNRESOLVED,
-  RESOLVING,
   RESOLVED
 }
 

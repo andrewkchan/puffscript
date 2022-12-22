@@ -571,4 +571,125 @@ describe("type checking", () => {
       "12: Undefined symbol 'x'."
     ])
   })
+
+  test("Cyclic variable declaration", () => {
+    expectResolveErrors(`
+    var x = x;
+    var y = z;
+    var z = y;
+    var a = foo();
+    def foo() int {
+      return bar();
+    }
+    def bar() int {
+      return int(b);
+    }
+    var b = int(a);
+    var p = foobar();
+    def foobar() int {
+      return int(q);
+    }
+    var q = foobar();
+    def getGlobalG() int {
+      return g;
+    }
+    var g = 1337;
+    def main() {
+      var g = getGlobalG(); // ok
+    }
+    `,
+    [
+      "1: Declaration of 'x' is cyclic. Defined here:\n" +
+      "var x = x;\n" +
+      "    ^",
+      "2: Declaration of 'y' is cyclic. Defined here:\n" +
+      "    var y = z;\n" +
+      "        ^",
+      "4: Declaration of 'a' is cyclic. Defined here:\n" +
+      "    var a = foo();\n" +
+      "        ^",
+      "16: Declaration of 'q' is cyclic. Defined here:\n" +
+      "    var q = foobar();\n" +
+      "        ^"
+    ])
+  })
+
+  test("Cyclic variable declaration inside block", () => {
+    expectResolveErrors(`
+    def main() {
+      var a = 1;
+      {
+        var a = a; // --> error!
+      }
+    }
+    `,
+    [
+      "4: Declaration of 'a' is cyclic. Defined here:\n" +
+      "        var a = a; // --> error!\n" +
+      "            ^"
+    ])
+  })
+
+  test("Recursive functions", () => {
+    expectResolveErrors(`
+    def fib(n int) int {
+      if (n <= 1) {
+        return 1;
+      }
+      return fib(n-1) + fib(n-2);
+    }
+    def isEven(n int) bool {
+      if (n == 0) {
+        return true;
+      }
+      return !isOdd(n-1);
+    }
+    def isOdd(n int) bool {
+      if (n == 1) {
+        return true;
+      }
+      return !isEven(n-1);
+    }
+    `, 
+    [/* no errors */])
+  })
+
+  test("Cyclic variable declaration with mutually recursive functions", () => {
+    expectResolveErrors(`
+    def foo(p int) int {
+      if (p == 0) {
+        return x;
+      }
+      return bar(p-1);
+    }
+    var x = int(bar(1));
+    def bar(p int) int {
+      return foo(p-1);
+    }
+    `,
+    [
+      "7: Declaration of 'x' is cyclic. Defined here:\n" +
+      "    var x = int(bar(1));\n" +
+      "        ^"
+    ])
+  })
+
+  test("Valid variable declaration with mutually recursive functions", () => {
+    expectResolveErrors(`
+    var x = isEven(100);
+    def isEven(n int) bool {
+      if (n == 0) {
+        return true;
+      }
+      return !isOdd(n-1);
+    }
+    def isOdd(n int) bool {
+      if (n == 1) {
+        return true;
+      }
+      return !isEven(n-1);
+    }
+    `,
+    [/* no errors */])
+  })
 })

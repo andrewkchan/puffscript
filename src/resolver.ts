@@ -34,12 +34,33 @@ export function resolve(context: Context, reportError: ReportError) {
     return functionStack.pop()!
   }
 
+  // Keeps track of all AST nodes (including from non-tree dependency edges)
+  // visited starting from a top-level statement.
+  //
+  // Currently used only for symbol cycle detection.
+  const visitedCount: Map<ast.Node, number> = new Map();
+  const visited: ast.Node[] = []
+  function preVisit(node: ast.Node) {
+    const count = visitedCount.get(node) ?? 0
+    visitedCount.set(node, count + 1)
+    visited.push(node)
+  }
+  function postVisit(node: ast.Node) {
+    const count = visitedCount.get(node) ?? 0
+    visitedCount.set(node, count - 1)
+    if (count <= 1) {
+      visitedCount.delete(node)
+    }
+    visited.pop()
+  }
+
   function resolveError(token: Token, msg: string): ResolveError {
     reportError(token.line(), msg)
     return new ResolveError(msg)
   }
 
   function resolveNode(node: ast.Node, isLiveAtEnd: boolean): void {
+    preVisit(node)
     switch (node.kind) {
       // expressions
       //
@@ -232,17 +253,15 @@ export function resolve(context: Context, reportError: ReportError) {
         if (symbol === null) {
           resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
           op.resolvedType = ast.VoidType
-        } else if (symbol.state == ast.SymbolState.RESOLVING) {
-          const varSymbol = symbol as ast.VariableSymbol
-          // Handle cyclic declarations (declarations using this variable expr in initializer)
-          resolveError(op.name, `Declaration of '${op.name.lexeme}' is cyclic. Defined here:\n${varSymbol.node.name.lineStr()}`)
-          op.resolvedType = ast.VoidType
         } else {
           let resolveTypeFromSymbol = true
+
+          const fnSymbol = symbol?.kind === ast.SymbolKind.FUNCTION ? symbol as ast.FunctionSymbol : null
+          const varSymbol = symbol?.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
+          const symbolDecl = fnSymbol?.node ?? varSymbol?.node
+
           if (symbol.state === ast.SymbolState.UNRESOLVED) {
             // Globals can be declared and used out-of-order.
-            const fnSymbol = symbol.kind === ast.SymbolKind.FUNCTION ? symbol as ast.FunctionSymbol : null
-            const varSymbol = symbol.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
             const isGlobal = fnSymbol !== null || (varSymbol !== null && varSymbol.isGlobal)
             if (isGlobal) {
               // Resolve the out-of-order global declaration. This is needed to:
@@ -251,13 +270,35 @@ export function resolve(context: Context, reportError: ReportError) {
               //    is part of a global's initializer.
               //
               // TODO: Don't walk tree twice if resolving the same node later on.
-              if (fnSymbol) {
-                resolveNode(fnSymbol.node, true)
-              } else {
-                resolveNode(varSymbol!.node, true)
-              }
+              // Use `symbol.dependencies` cache.
+              resolveNode(symbolDecl!, true)
             } else {
               resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
+              op.resolvedType = ast.VoidType
+              resolveTypeFromSymbol = false
+            }
+          } else if (symbolDecl && visitedCount.has(symbolDecl)) {
+            // Detect cyclic variable declarations (declarations using this variable expr in initializer).
+            // Note `symbolDecl` may not be the cylic variable in the following case:
+            // V1 -----> F1 -----> V2
+            //            ^        |
+            //            +--------+
+            // If we start at `V1`, we will detect a cycle at `F1`. To find
+            // the cyclic variable declaration, backtrack in `visitedStack`
+            // and return any variable symbol between the top and `symbolDecl`.
+            let cyclicVar: ast.VarStmt | null = null
+            if (symbolDecl.kind === ast.NodeKind.VAR_STMT) {
+              cyclicVar = symbolDecl
+            } else {
+              for (let i = visited.length - 1; visited[i] !== symbolDecl; i--) {
+                if (visited[i].kind === ast.NodeKind.VAR_STMT) {
+                  cyclicVar = visited[i] as ast.VarStmt
+                  break
+                }
+              }
+            }
+            if (cyclicVar !== null) {
+              resolveError(cyclicVar.name, `Declaration of '${cyclicVar.name.lexeme}' is cyclic. Defined here:\n${cyclicVar.name.lineStr()}`)
               op.resolvedType = ast.VoidType
               resolveTypeFromSymbol = false
             }
@@ -388,16 +429,7 @@ export function resolve(context: Context, reportError: ReportError) {
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         const symbol = peekScope().lookup(op.name.lexeme)! as ast.VariableSymbol
-        // Handle code like
-        // ```
-        // var a = "outer";
-        // {
-        //   var a = a; // --> error!
-        // }
-        // ```
-        // by marking the inner symbol as "resolving" before 
-        // resolving the initializer.
-        symbol.state = ast.SymbolState.RESOLVING
+        symbol.state = ast.SymbolState.RESOLVED
         resolveNode(op.initializer, isLiveAtEnd)
         console.assert(op.initializer.resolvedType !== null)
         if (op.type === null) {
@@ -409,7 +441,6 @@ export function resolve(context: Context, reportError: ReportError) {
             `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
           )
         }
-        symbol.state = ast.SymbolState.RESOLVED
 
         op.isLiveAtEnd = isLiveAtEnd
         break
@@ -426,6 +457,7 @@ export function resolve(context: Context, reportError: ReportError) {
         throw new Error(`unreachable`)
       }
     }
+    postVisit(node)
   }
 
   context.topLevelStatements.forEach(stmt => {

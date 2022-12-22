@@ -33,7 +33,14 @@ export class Token {
         start = i + 1
       }
     }
-    const snippet = this.source.substring(start, this.offset + this.lexeme.length + 1)
+    let end = this.offset + this.lexeme.length;
+    for (let i = end; i < this.source.length; i++) {
+      if (this.source.charAt(i) == '\n') {
+        end = i;
+        break
+      }
+    }
+    const snippet = this.source.substring(start, end)
     let ptr = ""
     for (let i = 0; i < this.offset - start; i++) {
       ptr += " "

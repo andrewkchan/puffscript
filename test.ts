@@ -853,4 +853,22 @@ test("simple 1: fib", async () => {
 8
 `.trim() + "\n")
   })
+
+  test("global initializers 1", async () => {
+    await expectOutput(`
+    var y = add(10, x);
+    var x = add(12, 34);
+    def add(x int, y int) int {
+      return x + y;
+    }
+    def main() {
+      print x;
+      print y;
+    }
+    `,
+    `
+46
+56
+`.trim() + "\n")
+  })
 })

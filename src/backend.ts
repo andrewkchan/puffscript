@@ -1,6 +1,6 @@
 import * as ast from './nodes'
 
-function wasmType(type: ast.Type): string {
+function wasmType(type: ast.Type): "i32" | "f32" {
   switch (type.category) {
     case ast.TypeCategory.BOOL:
     case ast.TypeCategory.BYTE:
@@ -14,6 +14,10 @@ function wasmType(type: ast.Type): string {
       throw new Error(`Unhandled type ${ast.TypeCategory[type.category]} for WASM backend`)
     }
   }
+}
+
+function defaultForWasmType(type: "i32" | "f32"): string {
+  return `${type}.const 0`
 }
 
 function wasmId(name: string, mangler?: number): string {
@@ -553,7 +557,8 @@ export function emit(context: ast.Context): string {
 
     context.globalInitOrder?.forEach((varDecl) => {
       if (varDecl.type !== null) {
-        line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${wasmType(varDecl.type)}))`)
+        const type = wasmType(varDecl.type)
+        line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${type}) ${defaultForWasmType(type)})`)
       }
     })
   

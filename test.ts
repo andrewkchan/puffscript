@@ -603,6 +603,22 @@ describe("type checking", () => {
     ])
   })
 
+  test("Lexical scope 2", () => {
+    expectResolveErrors(`
+    def main() {
+      var a = 1.5;
+      {
+        print a == true; // error
+        var a = true;
+        print a == true; // ok
+      }
+    }
+    `,
+    [
+      "4: Cannot compare float to bool."
+    ])
+  })
+
   test("Scope change due to out-of-order resolution", () => {
     expectResolveErrors(`
     def foo(y int) int {

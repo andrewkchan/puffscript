@@ -5,17 +5,14 @@ import * as ast from './nodes'
 
 class ParseError extends Error {}
 
-export interface Context {
-  global: ast.Scope
-  topLevelStatements: ast.TopStmt[]
-}
-
 // 1. Construct AST from stream of tokens
 // 2. Create scopes for blocks and functions
 // 3. Emplace symbol declarations into scopes
 // 4. Ensure no duplicate symbols in same scope
-export function parse(tokens: Token[], reportError: ReportError): Context {
+export function parse(tokens: Token[], reportError: ReportError): ast.Context {
+  const topLevelStatements: ast.TopStmt[] = []
   const global = new ast.Scope(null)
+  const context = new ast.Context(global, topLevelStatements)
   const scopes = [global]
 
   function peekScope(): ast.Scope {
@@ -156,7 +153,7 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
         // Calls will still be parsed + resolved with arity including duplicate.
         parseErrorForToken(param.name, `'${param.name.lexeme}' is already declared in this scope.`)
       } else {
-        scope.define(param.name.lexeme, ast.paramSymbol(param))
+        scope.define(param.name.lexeme, context.paramSymbol(param))
       }
     })
     const body = block()
@@ -167,14 +164,17 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
       params,
       returnType,
       body,
-      scope
+      scope,
+      symbol: null
     })
     const outerScope = peekScope()
     if (outerScope.hasDirect(name.lexeme)) {
       // Throw; we want to ignore this function and synchronize to next statement
       throw parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
     } else {
-      outerScope.define(name.lexeme, ast.functionSymbol(node))
+      const symbol = context.functionSymbol(node)
+      outerScope.define(name.lexeme, symbol)
+      node.symbol = symbol
     }
     return node
   }
@@ -193,13 +193,16 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
     const node = ast.varStmt({
       name,
       initializer: expr,
-      type: varType
+      type: varType,
+      symbol: null
     })
     const scope = peekScope()
     if (scope.hasDirect(name.lexeme)) {
       parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
     } else {
-      scope.define(name.lexeme, ast.variableSymbol(node, scope === global))
+      const symbol = context.variableSymbol(node, scope === global)
+      scope.define(name.lexeme, symbol)
+      node.symbol = symbol
     }
     return node
   }
@@ -566,7 +569,6 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
     throw parseError("Expect expression.")
   }
 
-  const topLevelStatements: ast.TopStmt[] = []
   while (!isAtEnd()) {
     try {
       const stmt = topDecl()
@@ -580,8 +582,5 @@ export function parse(tokens: Token[], reportError: ReportError): Context {
     }
   }
 
-  return {
-    global, 
-    topLevelStatements
-  }
+  return context
 }

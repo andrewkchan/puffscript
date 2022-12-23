@@ -186,13 +186,15 @@ export interface VariableExpr extends Node {
   kind: NodeKind.VARIABLE_EXPR
   name: Token
   resolvedType: Type | null // filled in by resolver pass
+  resolvedSymbol: Symbol | null // filled in by resolver pass
 }
 
 export function variableExpr({ name }: { name: Token }): VariableExpr {
   return {
     kind: NodeKind.VARIABLE_EXPR,
     name,
-    resolvedType: null
+    resolvedType: null,
+    resolvedSymbol: null
   }
 }
 
@@ -225,7 +227,7 @@ export const BoolType = {
   category: TypeCategory.BOOL as const
 }
 
-interface SimpleType {
+export interface SimpleType {
   category: TypeCategory.VOID | TypeCategory.INT | TypeCategory.FLOAT | TypeCategory.BYTE | TypeCategory.BOOL
 }
 
@@ -289,16 +291,26 @@ export interface FunctionStmt extends Node {
   returnType: Type
   body: Stmt[]
   scope: Scope
+  symbol: FunctionSymbol | null // filled in by parser
 }
 
-export function functionStmt({ name, params, returnType, body, scope }: { name: Token; params: Param[]; returnType: Type; body: Stmt[]; scope: Scope }): FunctionStmt {
+export function functionStmt(
+  { name, params, returnType, body, scope, symbol }: { 
+    name: Token; 
+    params: Param[]; 
+    returnType: Type; 
+    body: Stmt[]; 
+    scope: Scope; 
+    symbol: FunctionSymbol | null
+}): FunctionStmt {
   return {
     kind: NodeKind.FUNCTION_STMT,
     name,
     params,
     returnType,
     body,
-    scope
+    scope,
+    symbol
   }
 }
 
@@ -356,15 +368,17 @@ export interface VarStmt extends Node {
   initializer: Expr
   type: Type | null // null means 'infer from initializer in resolver step'
   isLiveAtEnd: boolean | null // filled in by resolver pass
+  symbol: VariableSymbol | null // filled in by parser
 }
 
-export function varStmt({ name, initializer, type }: { name: Token; initializer: Expr; type: Type | null }): VarStmt {
+export function varStmt({ name, initializer, type, symbol }: { name: Token; initializer: Expr; type: Type | null; symbol: VariableSymbol | null }): VarStmt {
   return {
     kind: NodeKind.VAR_STMT,
     name,
     initializer,
     type,
-    isLiveAtEnd: null
+    isLiveAtEnd: null,
+    symbol
   }
 }
 
@@ -396,38 +410,19 @@ export interface VariableSymbol {
   kind: SymbolKind.VARIABLE
   node: VarStmt
   isGlobal: boolean
-}
-
-export function variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol {
-  return {
-    kind: SymbolKind.VARIABLE,
-    node,
-    isGlobal
-  }
+  id: number
 }
 
 export interface FunctionSymbol {
   kind: SymbolKind.FUNCTION
   node: FunctionStmt
-}
-
-export function functionSymbol(node: FunctionStmt): FunctionSymbol {
-  return {
-    kind: SymbolKind.FUNCTION,
-    node,
-  }
+  id: number
 }
 
 export interface ParamSymbol {
   kind: SymbolKind.PARAM
   param: Param
-}
-
-export function paramSymbol(param: Param): ParamSymbol {
-  return {
-    kind: SymbolKind.PARAM,
-    param,
-  }
+  id: number
 }
 
 export class Scope {
@@ -447,14 +442,56 @@ export class Scope {
     return this.map.has(name)
   }
 
-  lookup(name: string): Symbol | null {
+  lookup(name: string, filter: (symbol: Symbol) => boolean): Symbol | null {
     if (this.map.has(name)) {
-      return this.map.get(name)!
+      const symbol = this.map.get(name)!
+      if (filter(symbol)) {
+        return symbol
+      }
     }
     if (this.parent) {
-      return this.parent.lookup(name)
+      return this.parent.lookup(name, filter)
     }
     return null
+  }
+}
+
+export class Context {
+  global: Scope
+  topLevelStatements: TopStmt[]
+  globalInitOrder: VarStmt[] | null // filled in by resolver
+
+  private nextID: number = 0
+
+  constructor(global: Scope, topLevelStatements: TopStmt[]) {
+    this.global = global
+    this.topLevelStatements = topLevelStatements
+    this.globalInitOrder = null
+  }
+
+  variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol {
+    return {
+      kind: SymbolKind.VARIABLE,
+      node,
+      isGlobal,
+      id: this.nextID++
+    }
+  }
+
+  functionSymbol(node: FunctionStmt): FunctionSymbol {
+    return {
+      kind: SymbolKind.FUNCTION,
+      node,
+      id: this.nextID++
+    }
+  }
+
+  paramSymbol(param: Param): ParamSymbol {
+    return {
+      kind: SymbolKind.PARAM,
+      param,
+      id: this.nextID++
+    }
   }
 }
 

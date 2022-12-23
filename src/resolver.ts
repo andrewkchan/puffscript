@@ -1,7 +1,6 @@
 import { ReportError } from './util'
 import * as ast from './nodes'
 import { Token } from './scanner'
-import { Context } from './parser'
 
 class ResolveError extends Error {}
 
@@ -10,7 +9,7 @@ class ResolveError extends Error {}
 // 3. Match `return` statements to enclosing functions
 // 4. Check arity of function calls
 // 5. Ensure no cyclic variable declarations
-export function resolve(context: Context, reportError: ReportError) {
+export function resolve(context: ast.Context, reportError: ReportError) {
   const global = context.global
   let scopes = [global]
   function peekScope(): ast.Scope {
@@ -45,11 +44,18 @@ export function resolve(context: Context, reportError: ReportError) {
     walked.push(node)
   }
   function postVisit(node: ast.Node) {
+    if (node.kind === ast.NodeKind.VAR_STMT) {
+      const isGlobal = scopes.length === 1
+      if (isGlobal) {
+        globalInitOrder.push(node as ast.VarStmt)
+      }
+    }
     walkedSet.delete(node)
     walked.pop()
   }
 
   const visited: Set<ast.Node> = new Set();
+  const globalInitOrder: ast.VarStmt[] = []
 
   function resolveError(token: Token, msg: string): ResolveError {
     reportError(token.line(), msg)
@@ -133,7 +139,7 @@ export function resolve(context: Context, reportError: ReportError) {
           resolveError(op.paren, `Cannot call this type.`)
         } else {
           const callee = op.callee as ast.VariableExpr
-          const symbol = peekScope().lookup(callee.name.lexeme)
+          const symbol = callee.resolvedSymbol
           if (!symbol) {
             // We already reported 'Undefined symbol' error earlier when resolving the callee VariableExpr
           } else if (symbol.kind !== ast.SymbolKind.FUNCTION) {
@@ -250,11 +256,21 @@ export function resolve(context: Context, reportError: ReportError) {
       }
       case ast.NodeKind.VARIABLE_EXPR: {
         const op = node as ast.VariableExpr
-        const symbol = peekScope().lookup(op.name.lexeme)
+        const symbol = peekScope().lookup(op.name.lexeme, (sym) => {
+          if (sym.kind === ast.SymbolKind.PARAM) {
+            return true
+          } else if (sym.kind === ast.SymbolKind.FUNCTION) {
+            return true
+          } else {
+            const varSym = sym as ast.VariableSymbol
+            return visited.has(varSym.node) || varSym.isGlobal
+          }
+        })
         if (symbol === null) {
           resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
           op.resolvedType = ast.VoidType
         } else {
+          op.resolvedSymbol = symbol
           let resolveTypeFromSymbol = true
 
           const fnSymbol = symbol?.kind === ast.SymbolKind.FUNCTION ? symbol as ast.FunctionSymbol : null
@@ -264,24 +280,20 @@ export function resolve(context: Context, reportError: ReportError) {
           if (symbolDecl && !visited.has(symbolDecl)) {
             // Globals can be declared and used out-of-order.
             const isGlobal = fnSymbol !== null || (varSymbol !== null && varSymbol.isGlobal)
-            if (isGlobal) {
-              // Resolve the out-of-order global declaration. This is needed to:
-              // 1. Resolve type of this variable expression.
-              // 2. Detect cyclic declarations in case this variable expression
-              //    is part of a global's initializer.
-              const oldScopes = scopes
-              const oldFunctionStack = functionStack
-              // Reset stacks since we're following non-tree edge back to top-level
-              scopes = [global]
-              functionStack = []
-              resolveNode(symbolDecl!, true)
-              scopes = oldScopes
-              functionStack = oldFunctionStack
-            } else {
-              resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
-              op.resolvedType = ast.VoidType
-              resolveTypeFromSymbol = false
-            }
+            // `lookup` should've filtered out un-visited locals
+            console.assert(isGlobal)
+            // Resolve the out-of-order global declaration. This is needed to:
+            // 1. Resolve type of this variable expression.
+            // 2. Detect cyclic declarations in case this variable expression
+            //    is part of a global's initializer.
+            const oldScopes = scopes
+            const oldFunctionStack = functionStack
+            // Reset stacks since we're following non-tree edge back to top-level
+            scopes = [global]
+            functionStack = []
+            resolveNode(symbolDecl!, true)
+            scopes = oldScopes
+            functionStack = oldFunctionStack
           } else if (symbolDecl && walkedSet.has(symbolDecl)) {
             // Detect cyclic variable declarations (declarations using this variable expr in initializer).
             // Note `symbolDecl` may not be the cylic variable in the following case:
@@ -359,7 +371,6 @@ export function resolve(context: Context, reportError: ReportError) {
       }
       case ast.NodeKind.FUNCTION_STMT: {
         const op = node as ast.FunctionStmt
-        const symbol = peekScope().lookup(op.name.lexeme)! as ast.FunctionSymbol
 
         pushScope(op.scope)
         pushFunction(op)
@@ -431,7 +442,6 @@ export function resolve(context: Context, reportError: ReportError) {
       }
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
-        const symbol = peekScope().lookup(op.name.lexeme)! as ast.VariableSymbol
         resolveNode(op.initializer, isLiveAtEnd)
         console.assert(op.initializer.resolvedType !== null)
         if (op.type === null) {
@@ -465,4 +475,5 @@ export function resolve(context: Context, reportError: ReportError) {
   context.topLevelStatements.forEach(stmt => {
     resolveNode(stmt, true)
   })
+  context.globalInitOrder = globalInitOrder
 }

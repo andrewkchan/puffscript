@@ -2,6 +2,9 @@
 index.d.ts
 index.d.ts.map
 
+# vscode
+.vscode/
+
 # Code Coverage Files
 *.js.map
 .nycrc

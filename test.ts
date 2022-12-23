@@ -3,6 +3,7 @@ import * as child_process from 'child_process'
 import { scanTokens } from './src/scanner'
 import { parse } from './src/parser'
 import { resolve } from './src/resolver'
+import { emit } from './src/backend'
 import { ReportError } from './src/util'
 import * as ast from './src/nodes'
 import { TokenType } from './src/tokens'
@@ -52,7 +53,7 @@ function expectAST(source: string, expected: string) {
   expect(sexpr).toEqual(expected)
   expect(errors).toEqual([])
 }
-function expectErrors(source: string, expectedErrors: string[], passes: Passes) {
+function expectErrors(source: string, expectedErrors: string[], passes: Passes): ast.Context | null {
   source = source.trim()
   const errors: string[] = []
   const reportError: ReportError = (line, msg) => {
@@ -67,14 +68,36 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes) 
     }
   }
 
+  let context: ast.Context | null = null
   if (errors.length == 0 && (passes & Passes.PARSE)) {
-    const context = parse(tokens, reportError)
+    context = parse(tokens, reportError)
     if (errors.length == 0 && (passes & Passes.RESOLVE)) {
       resolve(context, reportError)
     }
   }
   expect(errors).toEqual(expectedErrors)
+  return context
 }
+async function expectOutput(source: string, expectedOutput: string) {
+  const context = expectErrors(source, [], Passes.THROUGH_RESOLVE)
+  if (context) {
+    const code = emit(context)
+    fs.writeFileSync("test/tmp.wat", code)
+    child_process.execSync(`npx -p wabt wat2wasm test/tmp.wat -o test/tmp.wasm`)
+    let output = ""
+    const instance = await WebAssembly.instantiate(fs.readFileSync("test/tmp.wasm"), {
+      console: {
+        log: (x: any) => {
+          output += x + "\n"
+        }
+      }
+    })
+    instance.instance.exports.__init_globals__()
+    instance.instance.exports.main()
+    expect(output).toBe(expectedOutput)
+  }
+}
+
 describe("parser", () => {
   const expectParseErrors = (source: string, expectedErrors: string[]) => expectErrors(source, expectedErrors, Passes.THROUGH_PARSE)
   test("top-level statements", () => {
@@ -761,5 +784,73 @@ describe("type checking", () => {
     }
     `,
     [/* no errors */])
+  })
+})
+
+describe("end to end", () => {
+  test("print", async () => {
+    await expectOutput(`
+    def main() {
+      var bt = byte(256 + 42);
+      var bl = true;
+      var i = 256 + 42;
+      var f = 3.1415927410125732;
+      print bt;
+      print bl;
+      print i;
+      print f;
+    }
+    `,
+    `
+42
+1
+298
+3.1415927410125732
+`.trim() + "\n")
+  })
+
+  test("simple 1: add", async () => {
+    await expectOutput(`
+    def add(x int, y int) int {
+      return x + y;
+    }
+    def main() {
+      print add(42, -1337);
+    }
+    `,
+    `
+-1295
+`.trim() + "\n")
+  })
+
+test("simple 1: fib", async () => {
+  await expectOutput(`
+  def fib(n int) int {
+    if (n <= 0) {
+      return 0;
+    } else if (n == 1) {
+      return 1;
+    }
+    return fib(n-1) + fib(n-2);
+  }
+  def main() {
+    print fib(0);
+    print fib(1);
+    print fib(2);
+    print fib(3);
+    print fib(4);
+    print fib(5);
+    print fib(6);
+  }
+  `,
+  `
+0
+1
+1
+2
+3
+5
+8
+`.trim() + "\n")
   })
 })

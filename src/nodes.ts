@@ -292,6 +292,11 @@ export interface FunctionStmt extends Node {
   body: Stmt[]
   scope: Scope
   symbol: FunctionSymbol | null // filled in by parser
+  // After resolve pass, `hoistedLocals` should contain
+  // all local variables declared in descendant scopes 
+  // (e.g. nested blocks) *not* including the function 
+  // scope itself.
+  hoistedLocals: Set<VariableSymbol> | null // filled in by resolver
 }
 
 export function functionStmt(
@@ -310,7 +315,8 @@ export function functionStmt(
     returnType,
     body,
     scope,
-    symbol
+    symbol,
+    hoistedLocals: null
   }
 }
 
@@ -440,6 +446,12 @@ export class Scope {
 
   hasDirect(name: string): boolean {
     return this.map.has(name)
+  }
+
+  forEach(cb: (name: string, symbol: Symbol) => void): void {
+    this.map.forEach((symbol, key) => {
+      cb(key, symbol)
+    })
   }
 
   lookup(name: string, filter: (symbol: Symbol) => boolean): Symbol | null {

@@ -453,6 +453,13 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
           )
         }
+        const inFunction = peekFunction()
+        if (inFunction && inFunction.scope !== peekScope() && op.symbol) {
+          if (inFunction.hoistedLocals === null) {
+            inFunction.hoistedLocals = new Set()
+          }
+          inFunction.hoistedLocals.add(op.symbol)
+        }
 
         op.isLiveAtEnd = isLiveAtEnd
         break

@@ -961,6 +961,29 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
+  test("iterative factorial", async () => {
+    await expectOutput(`
+    def factorial(n int) int {
+      var result = 1;
+      while (n > 0) {
+        result = result * n;
+        n = n - 1;
+      }
+      return result;
+    }
+    def main() {
+      print factorial(0);
+      print factorial(3);
+      print factorial(5);
+    }
+    `,
+    `
+1
+6
+120
+`.trim() + "\n")
+  })
+
   test("lexical scope", async () => {
     await expectOutput(`
     var a = 1;

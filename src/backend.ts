@@ -347,9 +347,10 @@ export function emit(context: ast.Context): string {
             break
           }
           case "-": {
-            line(`i32.const 0`)
+            const t = wasmType(op.right.resolvedType!)
+            line(`${t}.const 0`)
             visit(op.right)
-            line(`i32.sub`)
+            line(`${t}.sub`)
             break
           }
           default: {

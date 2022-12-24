@@ -809,6 +809,113 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
+  test("int operators", async () => {
+    await expectOutput(`
+    def main() {
+      print -5;
+
+      print 5+3;
+      print 5-3;
+      print 5*3;
+      print 5/3;
+
+      print 5==3;
+      print 5==5;
+      print 5!=3;
+      print 5>3;
+      print 5>=3;
+      print 5<3;
+      print 5<=3;
+    }
+    `,
+    `
+-5
+8
+2
+15
+1
+0
+1
+1
+1
+1
+0
+0
+`.trim() + "\n")
+  })
+
+  test("float operators", async () => {
+    await expectOutput(`
+    def main() {
+      print -5.5;
+
+      print 5.5+3.0;
+      print 5.5-3.0;
+      print 5.5*3.0;
+      print 5.0/3.0;
+
+      print 5.0==3.0;
+      print 5.0==5.0;
+      print 5.0!=3.0;
+      print 5.0>3.0;
+      print 5.0>=3.0;
+      print 5.0<3.0;
+      print 5.0<=3.0;
+    }
+    `,
+    `
+-5.5
+8.5
+2.5
+16.5
+1.6666666269302368
+0
+1
+1
+1
+1
+0
+0
+`.trim() + "\n")
+  })
+
+  test("bool operators", async () => {
+    await expectOutput(`
+    def main() {
+      print !true;
+      print !false;
+      print true && true;
+      print true && false;
+      print false && true;
+      print false && false;
+      print true || true;
+      print true || false;
+      print false || true;
+      print false || false;
+      print true == true;
+      print true == false;
+      print false == true;
+      print false == false;
+    }
+    `,
+    `
+0
+1
+1
+0
+0
+0
+1
+1
+1
+0
+1
+0
+0
+1
+`.trim() + "\n")
+  })
+
   test("add", async () => {
     await expectOutput(`
     def add(x int, y int) int {

@@ -809,7 +809,7 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
-  test("simple 1: add", async () => {
+  test("add", async () => {
     await expectOutput(`
     def add(x int, y int) int {
       return x + y;
@@ -823,7 +823,7 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
-test("simple 1: fib", async () => {
+  test("fib", async () => {
   await expectOutput(`
   def fib(n int) int {
     if (n <= 0) {
@@ -852,6 +852,66 @@ test("simple 1: fib", async () => {
 5
 8
 `.trim() + "\n")
+  })
+
+  test("lexical scope", async () => {
+    await expectOutput(`
+    var a = 1;
+    var b = 2;
+    var c = 3;
+    def printGlobals() {
+      print a;
+      print b;
+      print c;
+    }
+    def incGlobals() {
+      a = a + 1;
+      b = b + 1;
+      c = c + 1;
+    }
+    def main() {
+      print a; // 1
+      print b; // 2
+      print c; // 3
+      var a = 10;
+      var b = 20;
+      {
+        print a; // 10
+        var a = 100;
+        b = b + 1;
+        print a; // 100
+        print b; // 21
+        print c; // 3
+      }
+      print a; // 10
+      print b; // 21
+      print c; // 3
+      b = b + 1;
+      print b; // 22
+      printGlobals();
+      incGlobals();
+      printGlobals();
+    }
+    `,
+    `
+1
+2
+3
+10
+100
+21
+3
+10
+21
+3
+22
+1
+2
+3
+2
+3
+4
+  `.trim() + "\n")
   })
 
   test("global initializers 1", async () => {

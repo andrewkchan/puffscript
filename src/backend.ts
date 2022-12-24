@@ -67,12 +67,12 @@ export function emit(context: ast.Context): string {
           visit(op.right)
           if (symbol?.kind === ast.SymbolKind.VARIABLE) {
             if (symbol.isGlobal) {
-              line(`global.store ${wasmId(symbol.node.name.lexeme)}`)
+              line(`global.set ${wasmId(symbol.node.name.lexeme)}`)
             } else {
-              line(`local.store ${wasmId(symbol.node.name.lexeme, symbol.id)}`)
+              line(`local.set ${wasmId(symbol.node.name.lexeme, symbol.id)}`)
             }
           } else if (symbol.kind === ast.SymbolKind.PARAM) {
-            line(`local.store ${wasmId(symbol.param.name.lexeme, symbol.id)}`)
+            line(`local.set ${wasmId(symbol.param.name.lexeme, symbol.id)}`)
           } else {
             throw new Error("Bad symbol for assignment")
           }

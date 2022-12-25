@@ -5,7 +5,7 @@ import { Token } from './scanner'
 class ResolveError extends Error {}
 
 // 1. Resolve AST types and type check all expressions + initializers
-// 2. Determine dependencies of global symbols (TODO)
+// 2. Determine dependencies of global symbols
 // 3. Match `return` statements to enclosing functions
 // 4. Check arity of function calls
 // 5. Ensure no cyclic variable declarations
@@ -62,6 +62,26 @@ export function resolve(context: ast.Context, reportError: ReportError) {
     return new ResolveError(msg)
   }
 
+  // Resolve `node` while attempting to coerce it to `type`.
+  // If coercion is possible, returns `node` wrapped in a cast expression if needed.
+  // If coercion is not possible, reports an error at `token` and returns `node`.
+  function resolveNodeWithCoercion(node: ast.Expr, isLiveAtEnd: boolean, type: ast.Type, token: Token): ast.Expr {
+    let out = node
+    resolveNode(node, isLiveAtEnd)
+    if (!ast.isEqual(node.resolvedType!, type)) {
+      if (ast.canCoerce(node.resolvedType!, type)) {
+        out = ast.castExpr({
+          type,
+          value: node
+        })
+        resolveNode(out, isLiveAtEnd)
+      } else {
+        resolveError(token, `Cannot implicitly convert operand to '${ast.typeToString(type)}'.`)
+      }
+    }
+    return out
+  }
+
   function resolveNode(node: ast.Node, isLiveAtEnd: boolean): void {
     if (visited.has(node)) {
       return
@@ -75,12 +95,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.ASSIGN_EXPR: {
         const op = node as ast.AssignExpr
         resolveNode(op.left, isLiveAtEnd)
-        resolveNode(op.right, isLiveAtEnd)
-        // TODO: What if left index expr is for a temporary?
-        if (!ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
-          // TODO: allow implicit conversions when possible
-          resolveError(op.operator, `Invalid operand types for assignment operator '${op.operator.lexeme}'.`)
-        }
+        op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, op.left.resolvedType!, op.operator)
         op.resolvedType = op.left.resolvedType
         break
       }
@@ -93,9 +108,11 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           case "<=":
           case ">":
           case ">=": {
-            // TODO: Automatic float conversion and promotion for byte to ints?
-            const leftIsNumberType = [ast.IntType, ast.FloatType, ast.ByteType].some(t => ast.isEqual(t, op.left.resolvedType!))
-            if (!leftIsNumberType || !ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
+            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+            if (lct) {
+              op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
+              op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+            } else {
               resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
             }
             op.resolvedType = ast.BoolType
@@ -103,8 +120,11 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           }
           case "!=":
           case "==": {
-            // TODO: Automatic float conversion and promotion for byte to ints?
-            if (!ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
+            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+            if (lct) {
+              op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
+              op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+            } else if (!ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
               const leftTypeStr = ast.typeToString(op.left.resolvedType!)
               const rightTypeStr = ast.typeToString(op.right.resolvedType!)
               resolveError(op.operator, `Cannot compare ${leftTypeStr} to ${rightTypeStr}.`)
@@ -116,9 +136,11 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           case "-":
           case "*":
           case "/": {
-            // TODO: Automatic float conversion and promotion for byte to ints?
-            const leftIsNumberType = [ast.IntType, ast.FloatType, ast.ByteType].some(t => ast.isEqual(t, op.left.resolvedType!))
-            if (!leftIsNumberType || !ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
+            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+            if (lct) {
+              op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
+              op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+            } else {
               resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
             }
             op.resolvedType = op.left.resolvedType!
@@ -208,15 +230,11 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       }
       case ast.NodeKind.LOGICAL_EXPR: {
         const op = node as ast.LogicalExpr
-        resolveNode(op.left, isLiveAtEnd)
-        resolveNode(op.right, isLiveAtEnd)
         switch (op.operator.lexeme) {
           case "&&":
           case "||": {
-            // TODO: Allow implicit conversion to bool
-            if (!ast.isEqual(op.left.resolvedType!, ast.BoolType) || !ast.isEqual(op.right.resolvedType!, ast.BoolType)) {
-              resolveError(op.operator, `Logical operator '${op.operator.lexeme}' requires bool operands.`)
-            }
+            op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, ast.BoolType, op.operator)
+            op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.BoolType, op.operator)
             op.resolvedType = ast.BoolType
             break
           }
@@ -228,22 +246,21 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       }
       case ast.NodeKind.UNARY_EXPR: {
         const op = node as ast.UnaryExpr
-        resolveNode(op.right, isLiveAtEnd)
         switch (op.operator.lexeme) {
           case "!": {
-            if (op.right.resolvedType !== ast.BoolType) {
-              // TODO: Allow implicit conversion to bool
-              resolveError(op.operator, `Unary operator '!' requires bool operand.`)
-            }
+            op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.BoolType, op.operator)
             op.resolvedType = ast.BoolType
             break
           }
           case "-": {
-            if (op.right.resolvedType !== ast.IntType && op.right.resolvedType !== ast.FloatType) {
-              // TODO: Allow implicit conversion of byte to int
-              resolveError(op.operator, `Unary operator '-' requires int or float operand.`)
+            resolveNode(op.right, isLiveAtEnd)
+            if (!ast.isNumeric(op.right.resolvedType!)) {
+              resolveError(op.operator, `Invalid operand type for unary operator '-'.`)
               op.resolvedType = ast.IntType
             } else {
+              if (ast.isEqual(op.right.resolvedType!, ast.ByteType)) {
+                op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.IntType, op.operator)
+              }
               op.resolvedType = op.right.resolvedType
             }
             break

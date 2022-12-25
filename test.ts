@@ -311,7 +311,7 @@ describe("type checking", () => {
     expectResolveErrors(`
     var u = 1.0 == false;
     var v = -true;
-    var w = !1.5;
+    var w = !1.5; // ok
     var x = 1 + true;
     var y = true / false;
     var z = true > false;
@@ -325,8 +325,7 @@ describe("type checking", () => {
     `,
     [
       "1: Cannot compare float to bool.",
-      "2: Unary operator '-' requires int or float operand.",
-      "3: Unary operator '!' requires bool operand.",
+      "2: Invalid operand type for unary operator '-'.",
       "4: Invalid operand types for binary operator '+'.",
       "5: Invalid operand types for binary operator '/'.",
       "6: Invalid operand types for binary operator '>'."
@@ -512,7 +511,7 @@ describe("type checking", () => {
       "6: Undefined symbol 'missing'.",
       "6: Invalid operand types for binary operator '-'.",
       "9: Undefined symbol 'missing'.",
-      "9: Invalid operand types for assignment operator '='.",
+      "9: Cannot implicitly convert operand to 'void'.",
       "10: Undefined symbol 'missing'.",
       "10: Expected a value of type 'int'.",
     ])
@@ -876,6 +875,31 @@ describe("end to end", () => {
 1
 0
 0
+`.trim() + "\n")
+  })
+
+  test("mixed int-and-float operators", async () => {
+    await expectOutput(`
+    def main() {
+      print 5.5+3;
+      print 5+3.5;
+      print 5-2.5;
+      print 5.5-3;
+      print 5*1.5;
+      print 1.5*5;
+      print 5.0/3;
+      print 5/3.0;
+    }
+    `,
+    `
+8.5
+8.5
+2.5
+2.5
+7.5
+7.5
+1.6666666269302368
+1.6666666269302368
 `.trim() + "\n")
   })
 

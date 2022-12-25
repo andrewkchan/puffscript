@@ -246,6 +246,124 @@ export function isEqual(a: Type, b: Type): boolean {
   return a.category === b.category
 }
 
+export function isNumeric(t: Type): boolean {
+  switch (t.category) {
+    case TypeCategory.ARRAY:
+    case TypeCategory.BOOL: 
+    case TypeCategory.VOID: {
+      return false
+    }
+    case TypeCategory.INT: 
+    case TypeCategory.FLOAT: 
+    case TypeCategory.BYTE: {
+      return true
+    }
+  }
+}
+
+export function canCoerce(from: Type, to: Type): boolean {
+  if (isEqual(from, to)) {
+    return true
+  }
+  if (from.category === TypeCategory.ARRAY || from.category === TypeCategory.VOID) {
+    return false
+  }
+  if (to.category === TypeCategory.ARRAY || to.category === TypeCategory.VOID){
+    return false
+  }
+  switch (from.category) {
+    case TypeCategory.INT: {
+      switch (to.category) {
+        case TypeCategory.INT: {
+          return true
+        }
+        case TypeCategory.FLOAT: {
+          return true
+        }
+        case TypeCategory.BYTE: {
+          return false
+        }
+        case TypeCategory.BOOL: {
+          return true
+        }
+      }
+    }
+    case TypeCategory.FLOAT: {
+      switch (to.category) {
+        case TypeCategory.INT: {
+          return false
+        }
+        case TypeCategory.FLOAT: {
+          return true
+        }
+        case TypeCategory.BYTE: {
+          return false
+        }
+        case TypeCategory.BOOL: {
+          return true
+        }
+      }
+    }
+    case TypeCategory.BYTE: {
+      switch (to.category) {
+        case TypeCategory.INT: {
+          return true
+        }
+        case TypeCategory.FLOAT: {
+          return true
+        }
+        case TypeCategory.BYTE: {
+          return true
+        }
+        case TypeCategory.BOOL: {
+          return true
+        }
+      }
+    }
+    case TypeCategory.BOOL: {
+      switch (to.category) {
+        case TypeCategory.INT: {
+          return false
+        }
+        case TypeCategory.FLOAT: {
+          return false
+        }
+        case TypeCategory.BYTE: {
+          return false
+        }
+        case TypeCategory.BOOL: {
+          return true
+        }
+      }
+    }
+  }
+}
+
+const NUMERIC_TYPE_PRECEDENCE: readonly SimpleType[] = [ByteType, IntType, FloatType]
+
+// Get lowest common numeric type to which we can coerce both `a` and `b`.
+// If one of the args is not a numeric, returns null.
+export function getLowestCommonNumeric(a: Type, b: Type): Type | null {
+  if (!isNumeric(a) || !isNumeric(b)) {
+    return null
+  }
+  if (isEqual(a, b)) {
+    return a
+  }
+  for (let i = 0; i < NUMERIC_TYPE_PRECEDENCE.length; i++) {
+    const t = NUMERIC_TYPE_PRECEDENCE[i]
+    if (canCoerce(a, t) && canCoerce(b, t)) {
+      return t
+    }
+  }
+  return null
+}
+
+export const INT_MIN = -2147483647
+export const INT_MAX = 2147483647
+export const BYTE_MIN = 0
+export const BYTE_MAX = 255
+
 export interface Param {
   type: Type
   name: Token

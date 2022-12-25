@@ -244,10 +244,15 @@ export function emit(context: ast.Context): string {
           }
           case ast.TypeCategory.INT: {
             switch (op.value.resolvedType?.category) {
+              case ast.TypeCategory.BYTE: {
+                // mask 24 MSB
+                line(`i32.const 0x000000FF`)
+                line(`i32.and`)
+                break
+              }
               case ast.TypeCategory.BOOL: 
-              case ast.TypeCategory.BYTE: 
               case ast.TypeCategory.INT: {
-                // no conversion needed as all are represented by i32
+                // no conversion needed
                 break
               }
               case ast.TypeCategory.FLOAT: {

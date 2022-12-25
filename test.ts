@@ -843,6 +843,38 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
+  test("byte operators", async () => {
+    await expectOutput(`
+    def main() {
+      print byte(5)+byte(3);
+      print byte(5)-byte(3);
+      print byte(5)*byte(3);
+      print byte(5)/byte(3);
+
+      print byte(5)==byte(3);
+      print byte(5)==byte(5);
+      print byte(5)!=byte(3);
+      print byte(5)>byte(3);
+      print byte(5)>=byte(3);
+      print byte(5)<byte(3);
+      print byte(5)<=byte(3);
+    }
+    `,
+    `
+8
+2
+15
+1
+0
+1
+1
+1
+1
+0
+0
+`.trim() + "\n")
+  })
+
   test("float operators", async () => {
     await expectOutput(`
     def main() {
@@ -900,6 +932,74 @@ describe("end to end", () => {
 7.5
 1.6666666269302368
 1.6666666269302368
+`.trim() + "\n")
+  })
+
+  test("mixed int-and-byte operators", async () => {
+    await expectOutput(`
+    def main() {
+      print -byte(5);
+
+      print byte(5)       + int(3);
+      print byte(256 + 5) + int(3);
+
+      print byte(3)       - int(5);
+      print byte(256 + 3) - int(5);
+      print int(3)        - byte(5);
+      print int(3)        - byte(256 + 5);
+      print byte(5)       * int(3);
+      print byte(256 + 5) * int(3);
+
+      print byte(5)       / int(3);
+      print byte(256 + 5) / int(3);
+      print int(5)        / byte(3);
+      print int(5)        / byte(256 + 3);
+
+      print int(5)        ==  byte(3);
+      print int(5)        ==  byte(256+3);
+      print int(5)        ==  byte(5);
+      print int(5)        ==  byte(256+5);
+      print int(256+3)    !=  byte(3);
+      print int(256+3)    !=  byte(256+3);
+
+      print int(5)        >   byte(3);
+      print int(5)        >   byte(256+3);
+      print int(5)        >=  byte(3);
+      print int(5)        >=  byte(256+3);
+      print int(5)        <   byte(3);
+      print int(5)        <   byte(256+3);
+      print int(5)        <=  byte(3);
+      print int(5)        <=  byte(256+3);
+    }
+    `,
+    `
+-5
+8
+8
+-2
+-2
+-2
+-2
+15
+15
+1
+1
+1
+1
+0
+0
+1
+1
+1
+1
+1
+1
+1
+1
+0
+0
+0
+0
 `.trim() + "\n")
   })
 

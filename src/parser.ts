@@ -541,6 +541,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
           if (length < 0) {
             throw parseError("Array length specifier must be >=0.")
           }
+          consume(TokenType.RIGHT_BRACKET, "Expect ']' after list literal.")
           return ast.repeatExpr({
             bracket,
             value,
@@ -585,7 +586,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       })
     }
 
-    if (check(TokenType.LEN)) {
+    if (match(TokenType.LEN)) {
       consume(TokenType.LEFT_PAREN, "Expect '(' before len expression.")
       const value = expression()
       consume(TokenType.RIGHT_PAREN, "Expect ')' after len expression.")

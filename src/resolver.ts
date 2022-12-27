@@ -221,10 +221,12 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             case ast.IntType:
             case ast.ByteType: {
               op.resolvedType = arrayType.elementType
+              break
             }
             default: {
               resolveError(op.bracket, `Index operator requires int or byte type.`)
               op.resolvedType = arrayType.elementType
+              break
             }
           }
         }
@@ -507,7 +509,10 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         resolveNode(op.initializer, isLiveAtEnd)
-        console.assert(op.initializer.resolvedType !== null)
+        if (op.initializer.resolvedType === null) {
+          console.log(`${ast.astToSExpr(op)}`)
+          throw new Error(`${ast.astToSExpr(op)}`)
+        }
         if (op.type === null) {
           op.type = op.initializer.resolvedType!
         } else if (!ast.isEqual(op.type, op.initializer.resolvedType!)) {

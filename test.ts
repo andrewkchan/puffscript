@@ -784,6 +784,38 @@ describe("type checking", () => {
     `,
     [/* no errors */])
   })
+
+  test("Array literals", () => {
+    expectResolveErrors(`
+    var a = [1, 2, 3]; // ok
+    var b [int; 3] = [1, 2, 3]; // ok
+    var c = [1, 2, true]; // err
+    var d = [1+2+3; 5]; // ok
+    var e [int; 5] = [1+2+3; 5]; // ok
+    var f [bool; 5] = [1+2+3; 5]; // err
+    var g = [[1, 2, 3], [4, 5, 6]]; // ok
+    var h [[int; 3]; 2] = [[1, 2, 3], [4, 5, 6]]; // ok
+    var i = [[1, 2], [1]]; // err
+    `,
+    [
+      "3: Cannot infer type for literal.",
+      "6: Cannot assign value of type '[int; 5]' to variable of type '[bool; 5]'.",
+      "9: Cannot infer type for literal."
+    ])
+  })
+
+  test("Array operations", () => {
+    expectResolveErrors(`
+    var arr = [1, 2, 3];
+    var x = arr[0]; // ok
+    var y = arr[1+1]; // ok
+    var z = arr[3.14]; // err
+    var p int = len(arr); // ok
+    `,
+    [
+      "4: Index operator requires int or byte type."
+    ])
+  })
 })
 
 describe("end to end", () => {
@@ -1272,6 +1304,25 @@ describe("end to end", () => {
     `
 46
 56
+`.trim() + "\n")
+  })
+
+  test("arrays 1", async () => {
+    await expectOutput(`
+    def main() {
+      var a = [6, 7, 8];
+      print a[0];
+      print len(a);
+      print a[len(a) - 1];
+      a[0] = 1337;
+      print a[0];
+    }
+    `,
+    `
+6
+3
+8
+1337
 `.trim() + "\n")
   })
 })

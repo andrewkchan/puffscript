@@ -13,6 +13,8 @@ import { assertUnreachable } from './util'
 // The stack pointer is stored as $__stack_ptr__ WASM global.
 const STACK_TOP_BYTE_OFFSET = 512*1024
 
+const INITIAL_PAGES = (8*1024*1024) / (64*1024);
+
 enum ExprMode {
   LVALUE,
   RVALUE
@@ -481,16 +483,16 @@ export function emit(context: ast.Context): string {
         const elementType = (op.resolvedType as ast.ArrayType).elementType
         if (initializer.kind === ast.ListKind.LIST) {
           if (ast.isScalar(elementType)) {
-            for (const value of initializer.values) {
+            for (let i = initializer.values.length - 1; i >= 0; i--) {
               emitAllocStackVal(elementType)
               // store item to sp
               line(`global.get ${wasmId("__stack_ptr__")}`)
-              visit(value) // value to store
+              visit(initializer.values[i]) // value to store
               emitStoreScalar(elementType)
             }
           } else {
-            for (const value of initializer.values) {
-              visit(value) // addr of value to store
+            for (let i = initializer.values.length - 1; i >= 0; i--) {
+              visit(initializer.values[i]) // addr of value to store
               emitPushMem(elementType)
               line(`drop`)
             }
@@ -801,7 +803,7 @@ export function emit(context: ast.Context): string {
     line(`(import "console" "log" (func ${wasmId("__log_i32__")} (param i32)))`)
     line(`(import "console" "log" (func ${wasmId("__log_f32__")} (param f32)))`)
 
-    line(`(memory $memory 1)`)
+    line(`(memory $memory ${INITIAL_PAGES})`)
 
     line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`)
     context.globalInitOrder?.forEach((varDecl) => {

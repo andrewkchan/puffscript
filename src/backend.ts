@@ -542,21 +542,33 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.LOGICAL_EXPR: {
         const op = node as ast.LogicalExpr
         // Can use bitwise equivalents assuming operands are bools (0 or 1)
-        visit(op.left)
-        visit(op.right)
+        const label = wasmId(nextLabelID++ + "")
+        line(`(block ${label} (result i32)`)
+        indent()
         switch (op.operator.lexeme) {
           case "&&": {
-            line(`i32.and`)
+            visit(op.left)
+            emitDupTop(`i32`)
+            line(`i32.eqz`)
+            line(`br_if ${label}`)
+            visit(op.right)
+            line(`i32.eq`)
             break
           }
           case "||": {
-            line(`i32.or`)
+            visit(op.left)
+            emitDupTop(`i32`)
+            line(`br_if ${label}`)
+            line(`drop`)
+            visit(op.right)
             break
           }
           default: {
             break
           }
         }
+        dedent()
+        line(`)`)
         break
       }
       case ast.NodeKind.UNARY_EXPR: {
@@ -802,6 +814,8 @@ export function emit(context: ast.Context): string {
     line(`(func (export "__init_globals__")`)
     {
       indent()
+      line(`(local ${wasmId("__tee_i32__")} i32)`)
+      line(`(local ${wasmId("__tee_f32__")} f32)`)
       context.globalInitOrder?.forEach((varDecl) => {
         if (varDecl.type !== null) {
           visit(varDecl)

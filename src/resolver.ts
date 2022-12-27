@@ -177,9 +177,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
               resolveError(op.paren, `Expected ${fn.node.params.length} arguments but got ${op.args.length} in call to ${fn.node.name.lexeme}.`)
             } else {
               for (let i = 0; i < op.args.length; i++) {
-                const arg = op.args[i]
                 const param = fn.node.params[i]
-                resolveNode(arg, isLiveAtEnd)
+                op.args[i] = resolveNodeWithCoercion(op.args[i], isLiveAtEnd, param.type, op.paren)
+                const arg = op.args[i]
                 if (!ast.isEqual(arg.resolvedType!, param.type)) {
                   const paramTypeStr = ast.typeToString(param.type)
                   const argTypeStr = ast.typeToString(arg.resolvedType!)

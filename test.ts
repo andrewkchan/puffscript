@@ -1040,17 +1040,74 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
-  test("add", async () => {
+  test("bool short-circuiting", async () => {
+    await expectOutput(`
+    def yes(r bool) bool {
+      print 1337;
+      return r;
+    }
+    def no(r bool) bool {
+      print -1;
+      return r;
+    }
+    def main() {
+      print yes(true) && yes(true);
+      print yes(true) && yes(false);
+      print yes(false) && no(true);
+      print yes(false) && no(false);
+      print yes(true) || no(true);
+      print yes(true) || no(false);
+      print yes(false) || yes(true);
+      print yes(false) || yes(false);
+    }
+    `,
+    `
+1337
+1337
+1
+1337
+1337
+0
+1337
+0
+1337
+0
+1337
+1
+1337
+1
+1337
+1337
+1
+1337
+1337
+0
+`.trim() + "\n")
+  })
+
+  test("function calls", async () => {
     await expectOutput(`
     def add(x int, y int) int {
       return x + y;
     }
+    def sub(x int, y int) int {
+      return x - y;
+    }
+    def lerp(a float, b float, t float) float {
+      return a*(1-t)+b*t;
+    }
     def main() {
       print add(42, -1337);
+      print sub(42, -1337);
+      print lerp(1, 3.14, 0.4);
+      print add(add(add(42, -1337), sub(42, -1337)), int(lerp(1, 3.14, 0.4)));
     }
     `,
     `
 -1295
+1379
+1.8560000658035278
+85
 `.trim() + "\n")
   })
 
@@ -1085,7 +1142,7 @@ describe("end to end", () => {
 `.trim() + "\n")
   })
 
-  test("iterative factorial", async () => {
+  test("iteration", async () => {
     await expectOutput(`
     def factorial(n int) int {
       var result = 1;
@@ -1095,15 +1152,47 @@ describe("end to end", () => {
       }
       return result;
     }
+    def pow(x float, n int) float {
+      var result = 1.0;
+      while (n > 0) {
+        result = result * x;
+        n = n - 1;
+      }
+      return result;
+    }
     def main() {
       print factorial(0);
-      print factorial(3);
       print factorial(5);
+      print pow(0.5, 3);
     }
     `,
     `
 1
-6
+120
+0.125
+`.trim() + "\n")
+  })
+
+  test("assignment eval and chaining", async () => {
+    await expectOutput(`
+    def factorial(n int) int {
+      var result = n;
+      while (n = n - 1) {
+        result = result * n;
+      }
+      return result;
+    }
+    var x = 1;
+    def main() {
+      var y = 2;
+      print x = y = factorial(5);
+      print x;
+      print y;
+    }
+    `,
+    `
+120
+120
 120
 `.trim() + "\n")
   })

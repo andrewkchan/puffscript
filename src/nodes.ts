@@ -8,6 +8,8 @@ export enum NodeKind {
   CAST_EXPR,
   GROUP_EXPR,
   INDEX_EXPR,
+  LEN_EXPR,
+  LIST_EXPR,
   LITERAL_EXPR,
   LOGICAL_EXPR,
   UNARY_EXPR,
@@ -28,7 +30,7 @@ export interface Node {
   kind: NodeKind
 }
 
-export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | GroupExpr | IndexExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
+export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | GroupExpr | IndexExpr | LenExpr | ListExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
 
 export interface AssignExpr extends Node {
   kind: NodeKind.ASSIGN_EXPR
@@ -86,14 +88,16 @@ export function callExpr({ callee, paren, args }: { callee: Expr; paren: Token; 
 
 export interface CastExpr extends Node {
   kind: NodeKind.CAST_EXPR
+  token: Token
   type: Type
   value: Expr
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function castExpr({ type, value }: { type: Type; value: Expr }): CastExpr {
+export function castExpr({ token, type, value }: { token: Token; type: Type; value: Expr }): CastExpr {
   return {
     kind: NodeKind.CAST_EXPR,
+    token,
     type,
     value,
     resolvedType: null
@@ -128,6 +132,70 @@ export function indexExpr({ callee, bracket, index }: { callee: Expr; bracket: T
     callee,
     bracket,
     index,
+    resolvedType: null
+  }
+}
+
+export interface LenExpr extends Node {
+  kind: NodeKind.LEN_EXPR
+  value: Expr
+  resolvedLength: number | null // filled in by resolver pass
+  resolvedType: typeof IntType
+}
+
+export function lenExpr({ value }: { value: Expr }): LenExpr {
+  return {
+    kind: NodeKind.LEN_EXPR,
+    value,
+    resolvedLength: null,
+    resolvedType: IntType
+  }
+}
+
+export enum ListKind {
+  LIST,
+  REPEAT
+}
+
+interface ListInitializer {
+  kind: ListKind.LIST
+  values: Expr[]
+}
+
+interface RepeatInitializer {
+  kind: ListKind.REPEAT
+  value: Expr
+  length: number
+}
+
+export interface ListExpr extends Node {
+  kind: NodeKind.LIST_EXPR
+  bracket: Token
+  initializer: ListInitializer | RepeatInitializer
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function listExpr({ values, bracket }: { values: Expr[]; bracket: Token }): ListExpr {
+  return {
+    kind: NodeKind.LIST_EXPR,
+    bracket,
+    initializer: {
+      kind: ListKind.LIST,
+      values
+    },
+    resolvedType: null
+  }
+}
+
+export function repeatExpr({ bracket, value, length }: { bracket: Token; value: Expr; length: number }): ListExpr {
+  return {
+    kind: NodeKind.LIST_EXPR,
+    bracket,
+    initializer: {
+      kind: ListKind.REPEAT,
+      value,
+      length
+    },
     resolvedType: null
   }
 }
@@ -200,10 +268,11 @@ export function variableExpr({ name }: { name: Token }): VariableExpr {
 
 export enum TypeCategory {
   ARRAY,
-  INT,
-  FLOAT,
-  BYTE,
   BOOL,
+  BYTE,
+  FLOAT,
+  INT,
+  POINTER,
   VOID
 }
 
@@ -227,9 +296,7 @@ export const BoolType = {
   category: TypeCategory.BOOL as const
 }
 
-export interface SimpleType {
-  category: TypeCategory.VOID | TypeCategory.INT | TypeCategory.FLOAT | TypeCategory.BYTE | TypeCategory.BOOL
-}
+export type SimpleType = typeof VoidType | typeof IntType | typeof FloatType | typeof ByteType | typeof BoolType
 
 export interface ArrayType {
   category: TypeCategory.ARRAY
@@ -237,19 +304,82 @@ export interface ArrayType {
   length: number
 }
 
-export type Type = ArrayType | SimpleType
+export function arrayType(elementType: Type, length: number): ArrayType {
+  return {
+    category: TypeCategory.ARRAY,
+    elementType,
+    length
+  }
+}
+
+export interface PointerType {
+  category: TypeCategory.POINTER
+  elementType: Type
+}
+
+export function ptrType(elementType: Type): PointerType {
+  return {
+    category: TypeCategory.POINTER,
+    elementType
+  }
+}
+
+export type Type = ArrayType | PointerType | SimpleType
 
 export function isEqual(a: Type, b: Type): boolean {
   if (a.category === TypeCategory.ARRAY && b.category === TypeCategory.ARRAY) {
     return isEqual(a.elementType, b.elementType) && a.length === b.length
   }
+  if (a.category === TypeCategory.POINTER && b.category === TypeCategory.POINTER) {
+    return isEqual(a.elementType, b.elementType)
+  }
   return a.category === b.category
+}
+
+export function sizeof(t: Type): number {
+  switch (t.category) {
+    case TypeCategory.ARRAY: {
+      return sizeof(t.elementType) * t.length;
+    }
+    case TypeCategory.POINTER: {
+      return sizeof(t.elementType)
+    }
+    case TypeCategory.INT: 
+    case TypeCategory.FLOAT: {
+      return 4;
+    }
+    case TypeCategory.BYTE: 
+    case TypeCategory.BOOL: {
+      return 1;
+    }
+    case TypeCategory.VOID: {
+      console.assert(false)
+      return 0;
+    }
+  }
+}
+
+export function isScalar(t: Type): boolean {
+  switch (t.category) {
+    case TypeCategory.ARRAY:
+    case TypeCategory.VOID: {
+      return false
+    }
+    case TypeCategory.BOOL: 
+    case TypeCategory.BYTE:
+    case TypeCategory.FLOAT:
+    case TypeCategory.INT: 
+    case TypeCategory.POINTER: {
+      return true
+    }
+  }
 }
 
 export function isNumeric(t: Type): boolean {
   switch (t.category) {
     case TypeCategory.ARRAY:
     case TypeCategory.BOOL: 
+    case TypeCategory.POINTER:
     case TypeCategory.VOID: {
       return false
     }
@@ -261,14 +391,26 @@ export function isNumeric(t: Type): boolean {
   }
 }
 
+export function canCast(from: Type, to: Type): boolean {
+  // If `from` is void, this is probably from an upstream error
+  // TODO: add a real 'error-type' type
+  if (isEqual(from, VoidType)) {
+    return true
+  }
+  if ((isNumeric(from) || isEqual(from, BoolType)) && (isNumeric(to) || isEqual(to, BoolType))) {
+    return true
+  }
+  return isEqual(from, to)
+}
+
 export function canCoerce(from: Type, to: Type): boolean {
   if (isEqual(from, to)) {
     return true
   }
-  if (from.category === TypeCategory.ARRAY || from.category === TypeCategory.VOID) {
+  if (from.category === TypeCategory.ARRAY || from.category === TypeCategory.VOID || from.category === TypeCategory.POINTER) {
     return false
   }
-  if (to.category === TypeCategory.ARRAY || to.category === TypeCategory.VOID){
+  if (to.category === TypeCategory.ARRAY || to.category === TypeCategory.VOID || to.category === TypeCategory.POINTER){
     return false
   }
   switch (from.category) {
@@ -626,30 +768,30 @@ export class Context {
 }
 
 function typeToSExpr(type: Type): string {
-  let out = ""
   switch (type.category) {
     case TypeCategory.ARRAY: {
-      out += "("
-      out += `arraytype ${type.length} ${typeToSExpr(type.elementType)}`
-      out += ")"
-      break
+      return `(arraytype ${type.length} ${typeToSExpr(type.elementType)})`
+    }
+    case TypeCategory.POINTER: {
+      return `(ptr ${typeToSExpr(type.elementType)})`
     }
     case TypeCategory.INT:
     case TypeCategory.FLOAT:
     case TypeCategory.BYTE:
     case TypeCategory.BOOL:
     case TypeCategory.VOID: {
-      out = TypeCategory[type.category].toLowerCase()
-      break
+      return TypeCategory[type.category].toLowerCase()
     }
   }
-  return out
 }
 
 export function typeToString(type: Type): string {
   switch (type.category) {
     case TypeCategory.ARRAY: {
       return `[${typeToString(type.elementType)}; ${type.length}]`
+    }
+    case TypeCategory.POINTER: {
+      return `${typeToString(type.elementType)}*`
     }
     case TypeCategory.INT:
     case TypeCategory.FLOAT:

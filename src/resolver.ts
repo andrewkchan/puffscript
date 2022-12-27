@@ -1,8 +1,11 @@
-import { ReportError } from './util'
+import { ReportError, assertUnreachable } from './util'
 import * as ast from './nodes'
 import { Token } from './scanner'
+import { TokenType } from './tokens'
 
 class ResolveError extends Error {}
+
+const FAKE_TOKEN = new Token(TokenType.EOF, "fake token for automatically added AST nodes", null, 0, "")
 
 // 1. Resolve AST types and type check all expressions + initializers
 // 2. Determine dependencies of global symbols
@@ -71,6 +74,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
     if (!ast.isEqual(node.resolvedType!, type)) {
       if (ast.canCoerce(node.resolvedType!, type)) {
         out = ast.castExpr({
+          token: FAKE_TOKEN,
           type,
           value: node
         })
@@ -192,6 +196,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.CAST_EXPR: {
         const op = node as ast.CastExpr
         resolveNode(op.value, isLiveAtEnd)
+        if (!ast.canCast(op.value.resolvedType!, op.type)) {
+          resolveError(op.token, `Cannot cast from ${ast.typeToString(op.value.resolvedType!)} to ${ast.typeToString(op.type)}.`)
+        }
         op.resolvedType = op.type
         break
       }
@@ -220,6 +227,46 @@ export function resolve(context: ast.Context, reportError: ReportError) {
               op.resolvedType = arrayType.elementType
             }
           }
+        }
+        break
+      }
+      case ast.NodeKind.LEN_EXPR: {
+        const op = node as ast.LenExpr
+        resolveNode(op.value, isLiveAtEnd)
+        if (op.value.resolvedType?.category === ast.TypeCategory.ARRAY) {
+          op.resolvedLength = op.value.resolvedType.length
+        } else {
+          op.resolvedLength = 0
+        }
+        break
+      }
+      case ast.NodeKind.LIST_EXPR: {
+        const op = node as ast.ListExpr
+        const initializer = op.initializer
+        let elementType: ast.Type | null = null
+        if (initializer.kind === ast.ListKind.LIST) {
+          if (initializer.values.length > 0) {
+            resolveNode(initializer.values[0], isLiveAtEnd)
+            elementType = initializer.values[0].resolvedType!
+            for (let i = 1; i < initializer.values.length; i++) {
+              resolveNode(initializer.values[i], isLiveAtEnd)
+              if (!ast.isEqual(initializer.values[i].resolvedType!, elementType)) {
+                elementType = null
+                break
+              }
+            }
+          }
+          // Note resolving an empty array will always throw a resolve error
+          // even if a type specifier for e.g. declaration or return value
+          // is given. Callers should not resolve the literal in that case.
+          if (elementType) {
+            op.resolvedType = ast.arrayType(elementType, initializer.values.length)
+          } else {
+            resolveError(op.bracket, "Cannot infer type for literal.")
+          }
+        } else {
+          resolveNode(initializer.value, isLiveAtEnd)
+          op.resolvedType = ast.arrayType(initializer.value.resolvedType!, initializer.length)
         }
         break
       }
@@ -490,7 +537,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       }
       
       default: {
-        throw new Error(`unreachable`)
+        assertUnreachable(node.kind)
       }
     }
     postVisit(node)

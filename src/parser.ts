@@ -531,17 +531,33 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       })
     }
     if (match(TokenType.LEFT_BRACKET)) {
+      const bracket = previous()
+      const values: ast.Expr[] = []
       if (!check(TokenType.RIGHT_BRACKET)) {
         // disambiguate between [x; N] and [x, y, z] literals
-        const arg = expression()
+        const value = expression()
         if (match(TokenType.SEMICOLON)) {
-          const length = consume(TokenType.NUMBER, "Expect length specifier in array repeat literal.")
-          // TODO fixme
-          throw parseError("Arrays not yet supported")
+          const length = consume(TokenType.NUMBER, "Expect length specifier in array repeat literal.").literal as number
+          if (length < 0) {
+            throw parseError("Array length specifier must be >=0.")
+          }
+          return ast.repeatExpr({
+            bracket,
+            value,
+            length
+          })
+        }
+        values.push(value)
+        while (!check(TokenType.RIGHT_BRACKET) && !isAtEnd()) {
+          if (values.length > 0) {
+            consume(TokenType.COMMA, "Expect ',' between items in list literal.")
+          }
+          const val = expression()
+          values.push(val)
         }
       }
-      // TODO fixme
-      throw parseError("Arrays not yet supported")
+      consume(TokenType.RIGHT_BRACKET, "Expect ']' after list literal.")
+      return ast.listExpr({ bracket, values })
     }
 
     if (check(TokenType.INT) || check(TokenType.FLOAT) || check(TokenType.BYTE) || check(TokenType.BOOL)) {
@@ -559,13 +575,23 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         }
       }
       consume(TokenType.LEFT_PAREN, "Expect '(' after type in cast expression.")
+      const paren = previous()
       const value = expression()
       consume(TokenType.RIGHT_PAREN, "Expect ')' after cast expression.")
       return ast.castExpr({
+        token: paren,
         type: castType,
         value
       })
     }
+
+    if (check(TokenType.LEN)) {
+      consume(TokenType.LEFT_PAREN, "Expect '(' before len expression.")
+      const value = expression()
+      consume(TokenType.RIGHT_PAREN, "Expect ')' after len expression.")
+      return ast.lenExpr({ value })
+    }
+    
     throw parseError("Expect expression.")
   }
 

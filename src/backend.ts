@@ -1,22 +1,46 @@
 import * as ast from './nodes'
+import { assertUnreachable } from './util'
 
-function wasmType(type: ast.Type): "i32" | "f32" {
+// The Puff "abstract machine", like C, has its own stack which
+// is separate from the WASM stack and lives inside linear memory.
+// "Locals" in WASM take the place of registers, and since
+// WASM can have infinite locals, this means we have effectively
+// infinite registers. So in Puffscript only variables which have
+// their addresses taken (none right now since no pointers yet!)
+// and structs/arrays need to go inside the in-memory stack.
+//
+// Like in C and most other models, Puff's stack grows downwards.
+// The stack pointer is stored as $__stack_ptr__ WASM global.
+const STACK_TOP_BYTE_OFFSET = 512*1024
+
+enum ExprMode {
+  LVALUE,
+  RVALUE
+}
+
+// Returns the WASM type used to represent values of the given type in the WASM (host) stack.
+// This may be different than the WASM type representing the value in the Puff (in-memory) stack.
+// E.g. integer arrays are represented by sequences of i32 in the in-memory stack but only 
+// represented by a single i32 address in the WASM stack.
+function registerType(type: ast.Type): "i32" | "f32" {
   switch (type.category) {
+    case ast.TypeCategory.ARRAY:
     case ast.TypeCategory.BOOL:
     case ast.TypeCategory.BYTE:
-    case ast.TypeCategory.INT: {
+    case ast.TypeCategory.INT:
+    case ast.TypeCategory.POINTER: {
       return "i32"
     }
     case ast.TypeCategory.FLOAT: {
       return "f32"
     }
-    default: {
+    case ast.TypeCategory.VOID: {
       throw new Error(`Unhandled type ${ast.TypeCategory[type.category]} for WASM backend`)
     }
   }
 }
 
-function defaultForWasmType(type: "i32" | "f32"): string {
+function defaultForRegisterType(type: "i32" | "f32"): string {
   return `${type}.const 0`
 }
 
@@ -52,7 +76,111 @@ export function emit(context: ast.Context): string {
 
   let nextLabelID = 0
 
-  function visit(node: ast.Node) {
+  // Emit code to:
+  // 1. push a value of the given type to the in-memory stack (+adjust __stack_ptr__)
+  // 2. return the new stack ptr, which points to the pushed value
+  // PRECOND: Address of value to push is top item of WASM stack.
+  function emitPushMem(type: ast.Type) {
+    emitAllocStackVal(type)
+    // memcpy value to stack ptr
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+    line(`i32.const ${ast.sizeof(type)}`)
+    line(`call ${wasmId("__memcpy__")}`)
+    // return stack ptr
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+  }
+  
+  // Emit code to:
+  // 1. push a scalar value of the given type to the in-memory stack (+adjust __stack_ptr__)
+  // 2. return the new stack ptr, which points to the pushed value
+  // PRECOND: Value is stored in the given local register.
+  function emitPushScalar(type: ast.Type, local: string) {
+    emitAllocStackVal(type)
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+    line(`local.get ${wasmId(local)}`)
+    emitStoreScalar(type)
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+  }
+
+  // Emit code to duplicate the value at the top of the stack.
+  // PRECOND: inside a function.
+  function emitDupTop(register: "i32" | "f32") {
+    const teeRegister = "__tee_" + register + "__"
+    line(`local.tee ${wasmId(teeRegister)}`)
+    line(`local.get ${wasmId(teeRegister)}`)
+  }
+
+  // Emit code to store a scalar value to given address.
+  // No return value.
+  // PRECOND: stack contains 2 values:
+  // - stack[n-1]: address to store at
+  // - stack[n]: scalar value to store
+  function emitStoreScalar(type: ast.Type) {
+    switch (type.category) {
+      case ast.TypeCategory.BOOL:
+      case ast.TypeCategory.BYTE: {
+        line(`i32.store8`)
+        break
+      }
+      case ast.TypeCategory.FLOAT: {
+        line(`f32.store`)
+        break
+      }
+      case ast.TypeCategory.INT:
+      case ast.TypeCategory.POINTER: {
+        line(`i32.store`)
+        break
+      }
+      default: {
+        throw new Error(`Unhandled element type ${ast.typeToString(type)} for emitStoreScalar`)
+      }
+    }
+  }
+
+  // Emit code to load and return a scalar value from given address.
+  // PRECOND: stack contains 1 value:
+  // - stack[n]: address to load from
+  function emitLoadScalar(type: ast.Type) {
+    switch (type.category) {
+      case ast.TypeCategory.BOOL:
+      case ast.TypeCategory.BYTE: {
+        line(`i32.load8_u`)
+        break
+      }
+      case ast.TypeCategory.FLOAT: {
+        line(`f32.load`)
+        break
+      }
+      case ast.TypeCategory.INT:
+      case ast.TypeCategory.POINTER: {
+        line(`i32.load`)
+        break
+      }
+      default: {
+        throw new Error(`Unhandled type ${ast.typeToString(type)} for emitLoadScalar`)
+      }
+    }
+  }
+
+  // Emit code to grow stack by sizeof(type) and adjust __stack_ptr__.
+  // No return value.
+  function emitAllocStackVal(type: ast.Type) {
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+    line(`i32.const ${ast.sizeof(type)}`)
+    line(`i32.sub`)
+    line(`global.set ${wasmId("__stack_ptr__")}`)
+  }
+
+  // Emit code to shrink stack by sizeof(type) and adjust __stack_ptr__.
+  // No return value.
+  function emitFreeStackVal(type: ast.Type) {
+    line(`global.get ${wasmId("__stack_ptr__")}`)
+    line(`i32.const ${ast.sizeof(type)}`)
+    line(`i32.add`)
+    line(`global.set ${wasmId("__stack_ptr__")}`)
+  }
+
+  function visit(node: ast.Node, exprMode: ExprMode = ExprMode.RVALUE) {
     if (skip.has(node)) {
       return
     }
@@ -61,23 +189,48 @@ export function emit(context: ast.Context): string {
       // expressions
       case ast.NodeKind.ASSIGN_EXPR: {
         const op = node as ast.AssignExpr
-        // TODO: handle index expressions on LHS
         if (op.left.kind === ast.NodeKind.VARIABLE_EXPR) {
           const symbol = op.left.resolvedSymbol!
           visit(op.right)
           if (symbol?.kind === ast.SymbolKind.VARIABLE) {
             if (symbol.isGlobal) {
+              emitDupTop(registerType(op.resolvedType!))
               line(`global.set ${wasmId(symbol.node.name.lexeme)}`)
             } else {
-              line(`local.set ${wasmId(symbol.node.name.lexeme, symbol.id)}`)
+              line(`local.tee ${wasmId(symbol.node.name.lexeme, symbol.id)}`)
             }
           } else if (symbol.kind === ast.SymbolKind.PARAM) {
-            line(`local.set ${wasmId(symbol.param.name.lexeme, symbol.id)}`)
+            line(`local.tee ${wasmId(symbol.param.name.lexeme, symbol.id)}`)
           } else {
             throw new Error("Bad symbol for assignment")
           }
         } else {
-          throw new Error("Unhandled left operand for assignment")
+          // Assigning to an index expression, e.g. `(...)[i] = ...`
+          const elementType = op.resolvedType!
+
+          if (ast.isScalar(elementType)) {
+            visit(op.left, ExprMode.LVALUE) // gets address of indexed element
+            visit(op.right) // gets value
+
+            const teeRegister = "__tee_" + registerType(op.resolvedType!) + "__"
+            {
+              line(`local.tee ${wasmId(teeRegister)}`) // for chained assignment
+              emitStoreScalar(elementType)
+              line(`local.get ${wasmId(teeRegister)}`)
+            }
+          } else {
+            visit(op.right) // gets address of value
+            visit(op.left, ExprMode.LVALUE) // gets address of indexed element
+
+            const teeRegister = "__tee_" + registerType(op.resolvedType!) + "__"
+            {
+              line(`local.tee ${wasmId(teeRegister)}`) // for chained assignment
+              line(`i32.const ${ast.sizeof(elementType)}`)
+              line(`call ${wasmId("__memcpy__")}`)
+  
+              line(`local.get ${wasmId(teeRegister)}`)
+            }
+          }
         }
         break
       }
@@ -296,8 +449,71 @@ export function emit(context: ast.Context): string {
         break
       }
       case ast.NodeKind.INDEX_EXPR: {
-        // TODO implement me
-        throw new Error("Array indexing is not yet supported")
+        const op = node as ast.IndexExpr
+        const elementType = op.resolvedType!
+        visit(op.callee) // push address of array start
+        visit(op.index) // push index
+        // pop 2, push address of indexed element
+        line(`i32.const ${ast.sizeof(elementType)}`)
+        line(`i32.mul`)
+        line(`i32.add`)
+        if (exprMode === ExprMode.LVALUE) {
+          // done; address of indexed element returned
+        } else {
+          // get value of indexed element
+          if (ast.isScalar(elementType)) {
+            emitLoadScalar(elementType)
+          } else {
+            emitPushMem(elementType)
+          }
+        }
+        break
+      }
+      case ast.NodeKind.LEN_EXPR: {
+        const op = node as ast.LenExpr
+        line(`i32.const ${op.resolvedLength}`)
+        break
+      }
+      case ast.NodeKind.LIST_EXPR: {
+        // TODO: Maybe desugar this into index + assignment expressions before codegen step
+        const op = node as ast.ListExpr
+        const initializer = op.initializer
+        const elementType = (op.resolvedType as ast.ArrayType).elementType
+        if (initializer.kind === ast.ListKind.LIST) {
+          if (ast.isScalar(elementType)) {
+            for (const value of initializer.values) {
+              emitAllocStackVal(elementType)
+              // store item to sp
+              line(`global.get ${wasmId("__stack_ptr__")}`)
+              visit(value) // value to store
+              emitStoreScalar(elementType)
+            }
+          } else {
+            for (const value of initializer.values) {
+              visit(value) // addr of value to store
+              emitPushMem(elementType)
+              line(`drop`)
+            }
+          }
+        } else {
+          if (ast.isScalar(elementType)) {
+            visit(initializer.value) // returns value to store
+            const teeRegister = `__tee_${registerType(elementType)}__`
+            line(`local.set ${wasmId(teeRegister)}`)
+            for (let i = 0; i < initializer.length; i++) {
+              emitPushScalar(elementType, teeRegister) // returns mutated __stack_ptr__
+              line(`drop`)
+            }
+          } else if (initializer.length > 0) {
+            // Call repeat expression to create first array item
+            // INVARIANT: Repeat expression pushes only the evaluation result (and nothing else) to stack
+            visit(initializer.value) // pushes to stack and returns mutated __stack_ptr__
+            for (let i = 1; i < initializer.length; i++) {
+              emitPushMem(elementType) // returns mutated __stack_ptr__
+            }
+          }
+        }
+        line(`global.get ${wasmId("__stack_ptr__")}`)
         break
       }
       case ast.NodeKind.LITERAL_EXPR: {
@@ -317,7 +533,7 @@ export function emit(context: ast.Context): string {
             break
           }
           default: {
-            // TODO: handle strings and arrays
+            // TODO: handle strings
             throw new Error(`Unhandled literal type ${ast.typeToString(op.type)}`)
           }
         }
@@ -352,7 +568,7 @@ export function emit(context: ast.Context): string {
             break
           }
           case "-": {
-            const t = wasmType(op.right.resolvedType!)
+            const t = registerType(op.right.resolvedType!)
             line(`${t}.const 0`)
             visit(op.right)
             line(`${t}.sub`)
@@ -397,8 +613,15 @@ export function emit(context: ast.Context): string {
       }
       case ast.NodeKind.EXPRESSION_STMT: {
         const op = node as ast.ExpressionStmt
-        // TODO: Do we need to discard evaluated result from stack?
         visit(op.expression)
+        const t = op.expression.resolvedType!
+        if (!ast.isEqual(t, ast.VoidType)) {
+          // discard result
+          if (!ast.isScalar(t)) {
+            emitFreeStackVal(t)
+          }
+          line(`drop`) 
+        }
         break
       }
       case ast.NodeKind.FUNCTION_STMT: {
@@ -412,12 +635,12 @@ export function emit(context: ast.Context): string {
           indent()
           op.scope.forEach((name, local) => {
             if (local.kind === ast.SymbolKind.PARAM) {
-              line(`(param ${wasmId(name, local.id)} ${wasmType(local.param.type)})`)
+              line(`(param ${wasmId(name, local.id)} ${registerType(local.param.type)})`)
             }
           })
           if (!ast.isEqual(op.returnType, ast.VoidType)) {
             // TODO: handle array return type
-            line(`(result ${wasmType(op.returnType)})`)
+            line(`(result ${registerType(op.returnType)})`)
           }
           // WASM doesn't have block scope, and `func` definitions require all locals to be 
           // declared ahead-of-time, so we need to hoist all locals in descendant scopes
@@ -438,14 +661,16 @@ export function emit(context: ast.Context): string {
           //   ;; ...
           // )
           // ```
+          line(`(local ${wasmId("__tee_i32__")} i32)`)
+          line(`(local ${wasmId("__tee_f32__")} f32)`)
           op.scope.forEach((name, local) => {
             if (local.kind === ast.SymbolKind.VARIABLE) {
-              line(`(local ${wasmId(name, local.id)} ${wasmType(local.node.type!)})`)
+              line(`(local ${wasmId(name, local.id)} ${registerType(local.node.type!)})`)
             }
           })
           op.hoistedLocals?.forEach((local) => {
             const name = local.node.name.lexeme
-            line(`(local ${wasmId(name, local.id)} ${wasmType(local.node.type!)})`)
+            line(`(local ${wasmId(name, local.id)} ${registerType(local.node.type!)})`)
           })
           op.body.forEach((statement) => {
             visit(statement)
@@ -551,6 +776,9 @@ export function emit(context: ast.Context): string {
         line(`)`)
         break
       }
+      default: {
+        assertUnreachable(node.kind)
+      }
     }
   }
 
@@ -561,10 +789,13 @@ export function emit(context: ast.Context): string {
     line(`(import "console" "log" (func ${wasmId("__log_i32__")} (param i32)))`)
     line(`(import "console" "log" (func ${wasmId("__log_f32__")} (param f32)))`)
 
+    line(`(memory $memory 1)`)
+
+    line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`)
     context.globalInitOrder?.forEach((varDecl) => {
       if (varDecl.type !== null) {
-        const type = wasmType(varDecl.type)
-        line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${type}) ${defaultForWasmType(type)})`)
+        const type = registerType(varDecl.type)
+        line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${type}) ${defaultForRegisterType(type)})`)
       }
     })
   
@@ -577,6 +808,61 @@ export function emit(context: ast.Context): string {
           skip.add(varDecl)
         }
       })
+      dedent()
+    }
+    line(`)`)
+
+    line(`(func ${wasmId("__memcpy__")} (param $src i32) (param $dst i32) (param $numBytes i32)`)
+    {
+      indent()
+      /*
+      while (numBytes > 0) {
+        *dst = *src;
+        src++;
+        dst++;
+        numBytes--;
+      }
+      */
+      const outerLabel = wasmId(nextLabelID++ + "")
+      const innerLabel = wasmId(nextLabelID++ + "")
+      line(`(block ${outerLabel}`)
+      {
+        indent()
+        line(`(loop ${innerLabel}`)
+        {
+          indent()
+          line(`local.get $numBytes`)
+          line(`i32.const 0`)
+          line(`i32.gt_s`)
+          line(`i32.eqz`)
+          line(`br_if ${outerLabel}`)
+          // *dst = *src;
+          line(`local.get $dst`)
+          line(`local.get $src`)
+          line(`i32.load8_u`)
+          line(`i32.store8`)
+          // src++, dst++;
+          line(`local.get $src`)
+          line(`i32.const 1`)
+          line(`i32.add`)
+          line(`local.set $src`)
+          line(`local.get $dst`)
+          line(`i32.const 1`)
+          line(`i32.add`)
+          line(`local.set $dst`)
+          // numBytes--;
+          line(`local.get $numBytes`)
+          line(`i32.const 1`)
+          line(`i32.sub`)
+          line(`local.set $numBytes`)
+          line(``)
+          line(`br ${innerLabel}`)
+          dedent()
+        }
+        line(`)`)
+        dedent()
+      }
+      line(`)`)
       dedent()
     }
     line(`)`)

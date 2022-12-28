@@ -22,6 +22,7 @@ export enum TokenType {
   SEMICOLON,
   SLASH,
   STAR,
+  PERCENT,
 
   // One or two character tokens.
   BANG_EQUAL,
@@ -75,6 +76,7 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.SEMICOLON]: /;/y,
   [TokenType.SLASH]: /\//y,
   [TokenType.STAR]: /\*/y,
+  [TokenType.PERCENT]: /%/y,
 
   // One or two character tokens.
   [TokenType.BANG_EQUAL]: /!=/y,

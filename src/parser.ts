@@ -437,7 +437,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
   function exprFactor(): ast.Expr {
     let expr = exprUnary()
-    while (match(TokenType.SLASH) || match(TokenType.STAR)) {
+    while (match(TokenType.SLASH) || match(TokenType.STAR) || match(TokenType.PERCENT)) {
       const operator = previous()
       const right = exprUnary()
       expr = ast.binaryExpr({

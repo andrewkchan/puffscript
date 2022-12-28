@@ -321,13 +321,18 @@ describe("type checking", () => {
     var d = 1 + 2;
     var e = 1.0 / 2.0;
     var f = 1.0 > 2.0;
+
+    var g = 5 % 2;
+    var h = 5 % -2;
+    var i = 5.0 % -2.0; // err
     `,
     [
       "1: Cannot compare float to bool.",
       "2: Invalid operand type for unary operator '-'.",
       "4: Invalid operand types for binary operator '+'.",
       "5: Invalid operand types for binary operator '/'.",
-      "6: Invalid operand types for binary operator '>'."
+      "6: Invalid operand types for binary operator '>'.",
+      "17: Invalid operand types for binary operator '%'."
     ])
   })
 
@@ -885,6 +890,10 @@ describe("end to end", () => {
       print 5>=3;
       print 5<3;
       print 5<=3;
+
+      print 10%3;
+      print 10%-3;
+      print -10%3;
     }
     `,
     `
@@ -900,6 +909,9 @@ describe("end to end", () => {
 1
 0
 0
+1
+1
+-1
 `.trim() + "\n")
   })
 
@@ -918,6 +930,10 @@ describe("end to end", () => {
       print byte(5)>=byte(3);
       print byte(5)<byte(3);
       print byte(5)<=byte(3);
+
+      print byte(10)%byte(3);
+      print byte(10)%byte(-3);
+      print byte(-10)%byte(3);
     }
     `,
     `
@@ -931,6 +947,9 @@ describe("end to end", () => {
 1
 1
 0
+0
+1
+10
 0
 `.trim() + "\n")
   })
@@ -1030,6 +1049,11 @@ describe("end to end", () => {
       print int(5)        <   byte(256+3);
       print int(5)        <=  byte(3);
       print int(5)        <=  byte(256+3);
+
+      print byte(10)      % int(3);
+      print byte(256 + 10)% int(3);
+      print int(10)       % byte(3);
+      print int(10)       % byte(256 + 3);
     }
     `,
     `
@@ -1060,6 +1084,10 @@ describe("end to end", () => {
 0
 0
 0
+1
+1
+1
+1
 `.trim() + "\n")
   })
 

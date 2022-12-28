@@ -136,6 +136,17 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             op.resolvedType = ast.BoolType
             break
           }
+          case "%": {
+            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+            if (lct && (ast.isEqual(lct, ast.IntType) || ast.isEqual(lct, ast.ByteType))) {
+              op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
+              op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+            } else {
+              resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
+            }
+            op.resolvedType = op.left.resolvedType!
+            break
+          }
           case "+":
           case "-":
           case "*":

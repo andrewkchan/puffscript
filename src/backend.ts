@@ -432,6 +432,14 @@ export function emit(context: ast.Context): string {
             }
             break
           }
+          case "%": {
+            if (ast.isEqual(op.left.resolvedType!, ast.ByteType)) {
+              line(`i32.rem_u`)
+            } else {
+              line(`i32.rem_s`)
+            }
+            break
+          }
           default: {
             throw new Error(`unreachable`)
           }
@@ -885,7 +893,8 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         visit(op.initializer)
-        // TODO: Handle array types
+        // Non-scalar types like arrays are pushed on the stack when the initializer
+        // is evaluated. The return value put onto the host (WASM) stack is an address.
         if (op.symbol?.isGlobal) {
           line(`global.set ${wasmId(op.name.lexeme)}`)
         } else {

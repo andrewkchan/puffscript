@@ -1425,15 +1425,15 @@ describe("end to end", () => {
     await expectOutput(`
     def mul(mat [[float; 2]; 2], v [float; 2]) [float; 2] {
       return [mat[0][0] * v[0] + mat[0][1] * v[1],
-              mat[1][0] * v[1] + mat[1][1] * v[1]];
+              mat[1][0] * v[0] + mat[1][1] * v[1]];
     }
     def ident() [[float; 2]; 2] {
       return [[1.0, 0.0],
               [0.0, 1.0]];
     }
     def rot90CCW() [[float; 2]; 2] {
-      return [[ 0.0, 1.0],
-              [-1.0, 0.0]];
+      return [[0.0, -1.0],
+              [1.0, 0.0]];
     }
     def main() {
       var I = ident();
@@ -1454,6 +1454,29 @@ describe("end to end", () => {
 [-1, 0]
 [0, -1]
 [1, 0]
+`.trim() + "\n")
+  })
+
+  test("arrays 4", async () => {
+    await expectOutput(`
+    def slurp(a int, b int, c int) [int; 6] {
+      var tmp = [a, b, c];
+      var result = [0; 6];
+      var i = 0;
+      while (i < len(tmp)) {
+        result[2*i] = 2*tmp[i];
+        result[2*i + 1] = 2*tmp[i] + 1;
+        i = i + 1;
+      }
+      return result;
+    }
+    def main() {
+      var y = slurp(1, 5, 10);
+      print y;
+    }
+    `,
+    `
+[2, 3, 10, 11, 20, 21]
 `.trim() + "\n")
   })
 })

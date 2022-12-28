@@ -57,6 +57,8 @@ function wasmId(name: string, mangler?: number): string {
   return identifier
 }
 
+const DEBUG_COMMENTS = true
+
 // Emits WAT code for the resolved context.
 export function emit(context: ast.Context): string {
 
@@ -76,6 +78,11 @@ export function emit(context: ast.Context): string {
   function line(text: string) {
     emit(_indent + text + "\n")
   }
+  function debugLine(text: string) {
+    if (DEBUG_COMMENTS) {
+      line(text)
+    }
+  }
 
   const skip: Set<ast.Node> = new Set()
 
@@ -86,6 +93,7 @@ export function emit(context: ast.Context): string {
   // 2. return the new stack ptr, which points to the pushed value
   // PRECOND: Address of value to push is top item of WASM stack.
   function emitPushMem(type: ast.Type) {
+    debugLine(`;; emitPushMem(${ast.typeToString(type)})`)
     emitAllocStackVal(type)
     // memcpy value to stack ptr
     line(`global.get ${wasmId("__stack_ptr__")}`)
@@ -100,6 +108,7 @@ export function emit(context: ast.Context): string {
   // 2. return the new stack ptr, which points to the pushed value
   // PRECOND: Value is stored in the given local register.
   function emitPushScalar(type: ast.Type, local: string) {
+    debugLine(`;; emitPushScalar(${ast.typeToString(type)})`)
     emitAllocStackVal(type)
     line(`global.get ${wasmId("__stack_ptr__")}`)
     line(`local.get ${wasmId(local)}`)
@@ -248,15 +257,42 @@ export function emit(context: ast.Context): string {
     }
   }
 
+  function emitDebugComments(node: ast.Node) {
+    switch (node.kind) {
+      case ast.NodeKind.BINARY_EXPR:
+      case ast.NodeKind.CAST_EXPR:
+      case ast.NodeKind.GROUP_EXPR:
+      case ast.NodeKind.LEN_EXPR:
+      case ast.NodeKind.LITERAL_EXPR:
+      case ast.NodeKind.LOGICAL_EXPR:
+      case ast.NodeKind.UNARY_EXPR:
+      case ast.NodeKind.VARIABLE_EXPR: {
+        // these are too noisy
+        return
+      }
+    }
+    debugLine(``)
+    debugLine(`;; visit ${ast.NodeKind[node.kind]}`)
+    debugLine(`;; ${ast.astToSExpr(node)}`)
+    debugLine(``)
+  }
+
   function visit(node: ast.Node, exprMode: ExprMode = ExprMode.RVALUE) {
     if (skip.has(node)) {
       return
     }
 
+    emitDebugComments(node)
+
     switch (node.kind) {
       // expressions
       case ast.NodeKind.ASSIGN_EXPR: {
         const op = node as ast.AssignExpr
+        op.operator.lineStr(true).split("\n").forEach((l) => {
+          debugLine(`;; ${l}`)
+        })
+        debugLine(``)
+
         if (op.left.kind === ast.NodeKind.VARIABLE_EXPR) {
           const symbol = op.left.resolvedSymbol!
           visit(op.right)
@@ -410,13 +446,22 @@ export function emit(context: ast.Context): string {
             op.args.forEach((arg) => {
               visit(arg)
             })
+            const returnType = op.resolvedType!
+            const pushReturnValToStack = !ast.isScalar(returnType) && !ast.isEqual(returnType, ast.VoidType)
+            if (pushReturnValToStack) {
+              emitAllocStackVal(returnType)
+            }
+
             line(`call ${wasmId(symbol.node.name.lexeme)}`)
-            if (ast.isScalar(op.resolvedType!) || ast.isEqual(op.resolvedType!, ast.VoidType)) {
-              // Nothing to do here; any return value was placed on host stack.
-            } else {
-              // Address of return value was placed on host stack.
-              // We need to push it to in-memory stack.
-              emitPushMem(op.resolvedType!)
+
+            if (pushReturnValToStack) {
+              // Call above returned address of return value.
+              // Memcpy it to the earlier reservation
+              line(`global.get ${wasmId("__stack_ptr__")}`)
+              line(`i32.const ${ast.sizeof(returnType)}`)
+              line(`call ${wasmId("__memcpy__")}`)
+              // return stack ptr
+              line(`global.get ${wasmId("__stack_ptr__")}`)
             }
           } else {
             throw new Error("Unexpected callee")  
@@ -525,6 +570,11 @@ export function emit(context: ast.Context): string {
       }
       case ast.NodeKind.INDEX_EXPR: {
         const op = node as ast.IndexExpr
+        op.bracket.lineStr(true).split("\n").forEach((l) => {
+          debugLine(`;; ${l}`)
+        })
+        debugLine(``)
+
         const elementType = op.resolvedType!
         visit(op.callee, ExprMode.LVALUE) // get address of array start
         visit(op.index) // get index
@@ -711,10 +761,8 @@ export function emit(context: ast.Context): string {
         const t = op.expression.resolvedType!
         if (!ast.isEqual(t, ast.VoidType)) {
           // discard result
-          if (!ast.isScalar(t)) {
-            emitFreeStackVal(t)
-          }
-          line(`drop`) 
+          // TODO: free unused stack memory? Tricky to know if its really unused
+          line(`drop`)
         }
         break
       }
@@ -733,7 +781,6 @@ export function emit(context: ast.Context): string {
             }
           })
           if (!ast.isEqual(op.returnType, ast.VoidType)) {
-            // TODO: handle array return type
             line(`(result ${registerType(op.returnType)})`)
           }
           // WASM doesn't have block scope, and `func` definitions require all locals to be 
@@ -755,6 +802,7 @@ export function emit(context: ast.Context): string {
           //   ;; ...
           // )
           // ```
+          line(`(local ${wasmId("__base_ptr__")} i32)`)
           line(`(local ${wasmId("__tee_i32__")} i32)`)
           line(`(local ${wasmId("__tee_f32__")} f32)`)
           op.scope.forEach((name, local) => {
@@ -766,9 +814,13 @@ export function emit(context: ast.Context): string {
             const name = local.node.name.lexeme
             line(`(local ${wasmId(name, local.id)} ${registerType(local.node.type!)})`)
           })
+          line(`global.get ${wasmId("__stack_ptr__")}`)
+          line(`local.set ${wasmId("__base_ptr__")}`)
           op.body.forEach((statement) => {
             visit(statement)
           })
+          line(`local.get ${wasmId("__base_ptr__")}`)
+          line(`global.set ${wasmId("__stack_ptr__")}`)
           dedent()
         }
         line(`)`)
@@ -813,6 +865,8 @@ export function emit(context: ast.Context): string {
         if (op.value) {
           visit(op.value)
         }
+        line(`local.get ${wasmId("__base_ptr__")}`)
+        line(`global.set ${wasmId("__stack_ptr__")}`)
         line(`return`)
         break
       }

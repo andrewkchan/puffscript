@@ -1,4 +1,5 @@
 import { Token } from './scanner'
+import { assertUnreachable } from './util'
 
 export enum NodeKind {
   // expressions
@@ -882,6 +883,25 @@ export function astToSExpr(node: Node): string {
       out += ")"
       break
     }
+    case NodeKind.LEN_EXPR: {
+      const op = node as LenExpr
+      out += `(len ${astToSExpr(op.value)})`
+      break
+    }
+    case NodeKind.LIST_EXPR: {
+      const op = node as ListExpr
+      out += "("
+      if (op.initializer.kind === ListKind.LIST) {
+        out += "list-initializer"
+        op.initializer.values.forEach((val) => {
+          out += ` ${astToSExpr(val)}`
+        })
+      } else {
+        out += `repeat-initializer ${op.initializer.length} ${astToSExpr(op.initializer.value)}`
+      }
+      out += ")"
+      break
+    }
     case NodeKind.LITERAL_EXPR: {
       const op = node as LiteralExpr
       if (op.type.category === TypeCategory.FLOAT && Number.isInteger(op.value)) {
@@ -990,6 +1010,9 @@ export function astToSExpr(node: Node): string {
       out += `while ${astToSExpr(op.expression)} ${astToSExpr(op.body)}`
       out += ")"
       break
+    }
+    default: {
+      assertUnreachable(node.kind)
     }
   }
   return out

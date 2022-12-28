@@ -26,7 +26,7 @@ export class Token {
     return lines
   }
 
-  lineStr(): string {
+  lineStr(showPointer: boolean = true): string {
     let start = 0
     for (let i = 0; i < this.offset; i++) {
       if (this.source.charAt(i) == '\n') {
@@ -46,7 +46,7 @@ export class Token {
       ptr += " "
     }
     ptr += "^"
-    return `${snippet}\n${ptr}`
+    return showPointer ? `${snippet}\n${ptr}` : snippet
   }
 
   toString(): string {

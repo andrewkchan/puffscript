@@ -180,17 +180,12 @@ export function resolve(context: ast.Context, reportError: ReportError) {
                 const param = fn.node.params[i]
                 op.args[i] = resolveNodeWithCoercion(op.args[i], isLiveAtEnd, param.type, op.paren)
                 const arg = op.args[i]
-                if (!ast.isEqual(arg.resolvedType!, param.type)) {
-                  const paramTypeStr = ast.typeToString(param.type)
-                  const argTypeStr = ast.typeToString(arg.resolvedType!)
-                  resolveError(op.paren, `Expected type '${paramTypeStr}' but got '${argTypeStr}' in call to ${fn.node.name.lexeme}.`)
-                }
               }
             }
             op.resolvedType = fn.node.returnType
           }
         }
-        op.resolvedType = op.resolvedType ?? ast.VoidType
+        op.resolvedType = op.resolvedType ?? ast.ErrorType
         break
       }
       case ast.NodeKind.CAST_EXPR: {
@@ -214,7 +209,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         resolveNode(op.index, isLiveAtEnd)
         if (op.callee.resolvedType!.category !== ast.TypeCategory.ARRAY) {
           resolveError(op.bracket, `Index operator requires array type.`)
-          op.resolvedType = ast.VoidType
+          op.resolvedType = ast.ErrorType
         } else {
           const arrayType = op.callee.resolvedType! as ast.ArrayType
           switch (op.index.resolvedType!) {
@@ -265,6 +260,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             op.resolvedType = ast.arrayType(elementType, initializer.values.length)
           } else {
             resolveError(op.bracket, "Cannot infer type for literal.")
+            op.resolvedType = ast.ErrorType
           }
         } else {
           resolveNode(initializer.value, isLiveAtEnd)
@@ -334,7 +330,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         })
         if (symbol === null) {
           resolveError(op.name, `Undefined symbol '${op.name.lexeme}'.`)
-          op.resolvedType = ast.VoidType
+          op.resolvedType = ast.ErrorType
         } else {
           op.resolvedSymbol = symbol
           let resolveTypeFromSymbol = true
@@ -382,7 +378,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             }
             if (cyclicVar !== null) {
               resolveError(cyclicVar.name, `Declaration of '${cyclicVar.name.lexeme}' is cyclic. Defined here:\n${cyclicVar.name.lineStr()}`)
-              op.resolvedType = ast.VoidType
+              op.resolvedType = ast.ErrorType
               resolveTypeFromSymbol = false
             }
           }

@@ -36,6 +36,7 @@ function registerType(type: ast.Type): "i32" | "f32" {
     case ast.TypeCategory.FLOAT: {
       return "f32"
     }
+    case ast.TypeCategory.ERROR:
     case ast.TypeCategory.VOID: {
       throw new Error(`Unhandled type ${ast.TypeCategory[type.category]} for WASM backend`)
     }

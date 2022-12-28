@@ -379,8 +379,8 @@ describe("type checking", () => {
     `,
     [
       "4: Expected 2 arguments but got 1 in call to foo.",
-      "5: Expected type 'int' but got 'bool' in call to foo.",
-      "5: Expected type 'int' but got 'bool' in call to foo."
+      "5: Cannot implicitly convert operand to 'int'.",
+      "5: Cannot implicitly convert operand to 'int'.",
     ])
   })
 
@@ -511,7 +511,6 @@ describe("type checking", () => {
       "6: Undefined symbol 'missing'.",
       "6: Invalid operand types for binary operator '-'.",
       "9: Undefined symbol 'missing'.",
-      "9: Cannot implicitly convert operand to 'void'.",
       "10: Undefined symbol 'missing'.",
       "10: Expected a value of type 'int'.",
     ])

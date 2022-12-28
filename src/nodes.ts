@@ -270,10 +270,15 @@ export enum TypeCategory {
   ARRAY,
   BOOL,
   BYTE,
+  ERROR,
   FLOAT,
   INT,
   POINTER,
   VOID
+}
+
+export const ErrorType = {
+  category: TypeCategory.ERROR as const
 }
 
 export const VoidType = {
@@ -324,7 +329,7 @@ export function ptrType(elementType: Type): PointerType {
   }
 }
 
-export type Type = ArrayType | PointerType | SimpleType
+export type Type = ArrayType | PointerType | SimpleType | typeof ErrorType
 
 export function isEqual(a: Type, b: Type): boolean {
   if (a.category === TypeCategory.ARRAY && b.category === TypeCategory.ARRAY) {
@@ -352,9 +357,9 @@ export function sizeof(t: Type): number {
     case TypeCategory.BOOL: {
       return 1;
     }
+    case TypeCategory.ERROR:
     case TypeCategory.VOID: {
-      console.assert(false)
-      return 0;
+      throw new Error(`Unhandled type ${typeToString(t)} for sizeof`)
     }
   }
 }
@@ -362,6 +367,7 @@ export function sizeof(t: Type): number {
 export function isScalar(t: Type): boolean {
   switch (t.category) {
     case TypeCategory.ARRAY:
+    case TypeCategory.ERROR:
     case TypeCategory.VOID: {
       return false
     }
@@ -379,6 +385,7 @@ export function isNumeric(t: Type): boolean {
   switch (t.category) {
     case TypeCategory.ARRAY:
     case TypeCategory.BOOL: 
+    case TypeCategory.ERROR:
     case TypeCategory.POINTER:
     case TypeCategory.VOID: {
       return false
@@ -392,9 +399,9 @@ export function isNumeric(t: Type): boolean {
 }
 
 export function canCast(from: Type, to: Type): boolean {
-  // If `from` is void, this is probably from an upstream error
-  // TODO: add a real 'error-type' type
-  if (isEqual(from, VoidType)) {
+  if (isEqual(from, ErrorType) || isEqual(to, ErrorType)) {
+    // We already threw an error somewhere.
+    // Pretend we can cast the result so we don't cascade errors.
     return true
   }
   if ((isNumeric(from) || isEqual(from, BoolType)) && (isNumeric(to) || isEqual(to, BoolType))) {
@@ -404,14 +411,27 @@ export function canCast(from: Type, to: Type): boolean {
 }
 
 export function canCoerce(from: Type, to: Type): boolean {
+  if (from.category === TypeCategory.ERROR || to.category === TypeCategory.ERROR) {
+    // We already threw an error somewhere.
+    // Pretend we can coerce the result so we don't cascade errors.
+    return true
+  }
   if (isEqual(from, to)) {
     return true
   }
-  if (from.category === TypeCategory.ARRAY || from.category === TypeCategory.VOID || from.category === TypeCategory.POINTER) {
-    return false
+  switch (from.category) {
+    case TypeCategory.ARRAY:
+    case TypeCategory.VOID:
+    case TypeCategory.POINTER: {
+      return false
+    }
   }
-  if (to.category === TypeCategory.ARRAY || to.category === TypeCategory.VOID || to.category === TypeCategory.POINTER){
-    return false
+  switch (to.category) {
+    case TypeCategory.ARRAY:
+    case TypeCategory.VOID:
+    case TypeCategory.POINTER: {
+      return false
+    }
   }
   switch (from.category) {
     case TypeCategory.INT: {
@@ -775,6 +795,9 @@ function typeToSExpr(type: Type): string {
     case TypeCategory.POINTER: {
       return `(ptr ${typeToSExpr(type.elementType)})`
     }
+    case TypeCategory.ERROR: {
+      return "<error-type>"
+    }
     case TypeCategory.INT:
     case TypeCategory.FLOAT:
     case TypeCategory.BYTE:
@@ -792,6 +815,9 @@ export function typeToString(type: Type): string {
     }
     case TypeCategory.POINTER: {
       return `${typeToString(type.elementType)}*`
+    }
+    case TypeCategory.ERROR: {
+      return "<error-type>"
     }
     case TypeCategory.INT:
     case TypeCategory.FLOAT:

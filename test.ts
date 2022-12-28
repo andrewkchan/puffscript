@@ -1420,4 +1420,40 @@ describe("end to end", () => {
 [[7, 8, 9], [4, 1337, 6]]
 `.trim() + "\n")
   })
+
+  test("arrays 3", async () => {
+    await expectOutput(`
+    def mul(mat [[float; 2]; 2], v [float; 2]) [float; 2] {
+      return [mat[0][0] * v[0] + mat[0][1] * v[1],
+              mat[1][0] * v[1] + mat[1][1] * v[1]];
+    }
+    def ident() [[float; 2]; 2] {
+      return [[1.0, 0.0],
+              [0.0, 1.0]];
+    }
+    def rot90CCW() [[float; 2]; 2] {
+      return [[ 0.0, 1.0],
+              [-1.0, 0.0]];
+    }
+    def main() {
+      var I = ident();
+      var x = [1.0, 0.0];
+      print mul(I, x);
+      var R = rot90CCW();
+      var i = 0;
+      while (i < 4) {
+        x = mul(R, x);
+        print x;
+        i = i + 1;
+      }
+    }
+    `,
+    `
+[1, 0]
+[0, 1]
+[-1, 0]
+[0, -1]
+[1, 0]
+`.trim() + "\n")
+  })
 })

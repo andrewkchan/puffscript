@@ -261,6 +261,35 @@ describe("parser", () => {
     ])
   })
 
+  test("Loop syntax", () => {
+    expectParseErrors(`
+    def main() {
+      while (foo() == bar()) loop(); // ok
+      while (foo() == bar()) { // ok
+        loop(); 
+      }
+      while (var i = 0) loop(); // error
+      while () loop(); // error
+      for (;;) loop(); // ok
+      for (;;) { // ok
+        loop(); 
+      }
+      for (var p = n; p != end; p = next(n)) loop(); // ok
+      for (var p = n;;) loop(); // ok
+      for (; p != end;) loop(); // ok
+      for (;; p = next(n)) loop(); // ok
+      for (var p = n; var q = n; p = next(n)) loop(); // error
+    }
+    `,
+    [
+      "6: Expect expression.",
+      "7: Expect expression.",
+      "16: Expect expression.",
+      // TODO: silence extra error, e.g. with a for loop error production
+      "16: Expect ';' after expression statement."
+    ])
+  })
+
   test("Duplicate symbol declaration", () => {
     expectParseErrors(`
     var a = 1;
@@ -641,6 +670,26 @@ describe("type checking", () => {
     `,
     [
       "4: Cannot compare float to bool."
+    ])
+  })
+
+  test("For loop scope", () => {
+    expectResolveErrors(`
+    def main() {
+      {
+        var i = 1337;
+        for (var i = 0; i < 3; i = i + 1) {
+          print i;
+        }
+      }
+      for (var i = 0; i < 3; i = i + 1) {
+        print i;
+      }
+      print i; // error
+    }
+    `,
+    [
+      "11: Undefined symbol 'i'."
     ])
   })
 
@@ -1242,9 +1291,8 @@ describe("end to end", () => {
     }
     def pow(x float, n int) float {
       var result = 1.0;
-      while (n > 0) {
+      for (var i = 0; i < n; i = i + 1) {
         result = result * x;
-        n = n - 1;
       }
       return result;
     }
@@ -1258,6 +1306,33 @@ describe("end to end", () => {
 1
 120
 0.125
+`.trim() + "\n")
+  })
+
+  test("for loops", async () => {
+    await expectOutput(`
+    def main() {
+      {
+        var i = 1337;
+        for (var i = 0; i < 3; i = i + 1) {
+          print i;
+        }
+        print i;
+      }
+      for (var i = 0; i < 8; i = i + 2) {
+        print i;
+      }
+    }
+    `,
+    `
+0
+1
+2
+1337
+0
+2
+4
+6
 `.trim() + "\n")
   })
 

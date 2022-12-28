@@ -217,6 +217,9 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (match(TokenType.WHILE)) {
       return whileStmt()
     }
+    if (match(TokenType.FOR)) {
+      return forStmt()
+    }
     if (match(TokenType.RETURN)) {
       return returnStmt()
     }
@@ -230,6 +233,10 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       })
     }
 
+    return expressionStmt()
+  }
+
+  function expressionStmt(): ast.ExpressionStmt {
     const expr = expression()
     consume(TokenType.SEMICOLON, "Expect ';' after expression statement.")
     return ast.expressionStmt({
@@ -287,6 +294,53 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     return ast.whileStmt({
       expression: condition,
       body
+    })
+  }
+
+  function forStmt(): ast.Stmt {
+    // This is desugared into initializer, while loop, and increment statements
+    consume(TokenType.LEFT_PAREN, "Expect '(' after 'for'.")
+    pushScope()
+
+    let initializer: ast.Stmt | null = null
+    if (match(TokenType.SEMICOLON)) {
+      initializer = null
+    } else if (match(TokenType.VAR)) {
+      initializer = varDecl()
+    } else {
+      initializer = expressionStmt()
+    }
+    let condition: ast.Expr | null = null
+    if (!check(TokenType.SEMICOLON)) {
+      condition = expression()
+    } else {
+      condition = ast.literalExpr({
+        value: true,
+        type: ast.BoolType
+      })
+    }
+    consume(TokenType.SEMICOLON, "Expect ';' after loop condition.")
+    let increment: ast.Expr | null = null;
+    if (!check(TokenType.RIGHT_PAREN)) {
+      increment = expression();
+    }
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after for clauses.");
+    pushScope()
+    let body: ast.Stmt = statement()
+    const innerScope = popScope()
+    const outerScope = popScope()
+    
+    const loop = ast.whileStmt({
+      expression: condition,
+      body: ast.blockStmt({
+        statements: increment ? [body, ast.expressionStmt({ expression: increment })] : [body],
+        scope: innerScope
+      })
+    })
+
+    return ast.blockStmt({
+      statements: initializer ? [initializer, loop] : [loop],
+      scope: outerScope
     })
   }
 

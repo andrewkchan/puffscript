@@ -4,7 +4,7 @@ import { scanTokens } from './src/scanner'
 import { parse } from './src/parser'
 import { resolve } from './src/resolver'
 import { emit } from './src/backend'
-import { ReportError } from './src/util'
+import { ReportError, UTF8Codec } from './src/util'
 import * as ast from './src/nodes'
 import { TokenType } from './src/tokens'
 
@@ -84,11 +84,28 @@ async function expectOutput(source: string, expectedOutput: string) {
     const code = emit(context)
     fs.writeFileSync("test/tmp.wat", code)
     child_process.execSync(`npx -p wabt wat2wasm test/tmp.wat -o test/tmp.wasm`)
+    
+    const codec = new UTF8Codec()
+    let ioBuffer = ""
     let output = ""
+
     const instance = await WebAssembly.instantiate(fs.readFileSync("test/tmp.wasm"), {
-      console: {
+      io: {
         log: (x: any) => {
           output += x + "\n"
+        },
+        putchar: (x: number) => {
+          ioBuffer += codec.decodeASCIIChar(x)
+        },
+        putf: (x: number) => {
+          ioBuffer += x
+        },
+        puti: (x: number) => {
+          ioBuffer += x
+        },
+        flush: () => {
+          output += ioBuffer + "\n"
+          ioBuffer = ""
         }
       }
     })
@@ -815,6 +832,27 @@ describe("type checking", () => {
       "4: Index operator requires int or byte type."
     ])
   })
+
+  test("N-D array operations", () => {
+    expectResolveErrors(`
+    def main() {
+      var arr = [[1, 2, 3], [4, 5, 6]]; // ok
+      var x1 [int; 3] = arr[0]; // ok
+      var x2 int = arr[0]; // err
+      var y1 [int; 3] = arr[1+1][0]; // err
+      var y2 int = arr[1+1][0]; // ok
+      var p int = len(arr); // ok
+      var q int = len(arr[0]); // ok
+      arr[0] = [7, 8, 9]; // ok
+      arr[0] = [1, 2]; // err
+    }
+    `,
+    [
+      "4: Cannot assign value of type '[int; 3]' to variable of type 'int'.",
+      "5: Cannot assign value of type 'int' to variable of type '[int; 3]'.",
+      "10: Cannot implicitly convert operand to '[int; 3]'."
+    ])
+  })
 })
 
 describe("end to end", () => {
@@ -825,10 +863,12 @@ describe("end to end", () => {
       var bl = true;
       var i = 256 + 42;
       var f = 3.1415927410125732;
+      var arr = [1,2,3];
       print bt;
       print bl;
       print i;
       print f;
+      print arr;
     }
     `,
     `
@@ -836,6 +876,7 @@ describe("end to end", () => {
 1
 298
 3.1415927410125732
+[1, 2, 3]
 `.trim() + "\n")
   })
 
@@ -1335,6 +1376,48 @@ describe("end to end", () => {
 3.140000104904175
 3
 2.7179999351501465
+`.trim() + "\n")
+  })
+
+  test("arrays 2", async () => {
+    await expectOutput(`
+    def main() {
+      var a = [[1, 2, 3],
+               [4, 5, 6]];
+      print a;
+      print a[0];
+      print a[0][0];
+      a[0][0] = a[0][1] = a[0][2] = a[1][1];
+      print a;
+      print a[0];
+      print a[0][0];
+      a[1][1] = 1337;
+      print a;
+      print a[0];
+      print a[0][0];
+      a[0] = [7, 8, 9];
+      print a;
+      var b = a[0];
+      print b;
+      b = a[1];
+      print b;
+      print a;
+    }
+    `,
+    `
+[[1, 2, 3], [4, 5, 6]]
+[1, 2, 3]
+1
+[[5, 5, 5], [4, 5, 6]]
+[5, 5, 5]
+5
+[[5, 5, 5], [4, 1337, 6]]
+[5, 5, 5]
+5
+[[7, 8, 9], [4, 1337, 6]]
+[7, 8, 9]
+[4, 1337, 6]
+[[7, 8, 9], [4, 1337, 6]]
 `.trim() + "\n")
   })
 })

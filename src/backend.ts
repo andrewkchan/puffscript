@@ -1,5 +1,7 @@
 import * as ast from './nodes'
-import { assertUnreachable } from './util'
+import { assertUnreachable, UTF8Codec } from './util'
+
+const codec = new UTF8Codec()
 
 // The Puff "abstract machine", like C, has its own stack which
 // is separate from the WASM stack and lives inside linear memory.
@@ -183,6 +185,69 @@ export function emit(context: ast.Context): string {
     line(`global.set ${wasmId("__stack_ptr__")}`)
   }
 
+  // Emit code to print the given ASCII character.
+  // No return value.
+  function emitPrintASCIIChars(chars: string) {
+    for (let i = 0; i < chars.length; i++) {
+      const c = chars[i]
+      line(`i32.const ${codec.encodeASCIIChar(c)}`)
+      line(`call ${wasmId("__putc__")}`)
+    }
+  }
+
+  // Emit code to print a value of the given type.
+  // No return value.
+  // PRECOND: Stack contains 1 value:
+  // - stack[n]: Scalar value or address of non-scalar value to print
+  function emitPrintVal(type: ast.Type) {
+    switch (type.category) {
+      case ast.TypeCategory.ARRAY: {
+        // TODO: When we implement strings, desugar me?
+        const elementType = type.elementType
+        emitPrintASCIIChars(`[`)
+        for (let i = 0; i < type.length; i++) {
+          const isLast = i === type.length - 1
+          if (!isLast) {
+            emitDupTop("i32")
+          }
+          line(`i32.const ${i * ast.sizeof(elementType)}`)
+          line(`i32.add`)
+          if (ast.isScalar(elementType)) {
+            emitLoadScalar(elementType)
+            emitPrintVal(elementType)
+          } else {
+            emitPrintVal(elementType)
+          }
+          if (!isLast) {
+            emitPrintASCIIChars(`, `)
+          }
+        }
+        emitPrintASCIIChars(`]`)
+        break
+      }
+      case ast.TypeCategory.BYTE: {
+        // mask 24 MSB before logging
+        line(`i32.const 0x000000FF`)
+        line(`i32.and`)
+        line(`call ${wasmId("__puti__")}`)
+        break
+      }
+      case ast.TypeCategory.BOOL:
+      case ast.TypeCategory.INT: {
+        line(`call ${wasmId("__puti__")}`)
+        break
+      }
+      case ast.TypeCategory.FLOAT: {
+        line(`call ${wasmId("__putf__")}`)
+        break
+      }
+      default: {
+        // TODO: Handle strings
+        throw new Error("Unexpected type for print")
+      }
+    }
+  }
+
   function visit(node: ast.Node, exprMode: ExprMode = ExprMode.RVALUE) {
     if (skip.has(node)) {
       return
@@ -346,6 +411,13 @@ export function emit(context: ast.Context): string {
               visit(arg)
             })
             line(`call ${wasmId(symbol.node.name.lexeme)}`)
+            if (ast.isScalar(op.resolvedType!) || ast.isEqual(op.resolvedType!, ast.VoidType)) {
+              // Nothing to do here; any return value was placed on host stack.
+            } else {
+              // Address of return value was placed on host stack.
+              // We need to push it to in-memory stack.
+              emitPushMem(op.resolvedType!)
+            }
           } else {
             throw new Error("Unexpected callee")  
           }
@@ -454,9 +526,9 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.INDEX_EXPR: {
         const op = node as ast.IndexExpr
         const elementType = op.resolvedType!
-        visit(op.callee) // push address of array start
-        visit(op.index) // push index
-        // pop 2, push address of indexed element
+        visit(op.callee, ExprMode.LVALUE) // get address of array start
+        visit(op.index) // get index
+        // eat 2, get address of indexed element
         line(`i32.const ${ast.sizeof(elementType)}`)
         line(`i32.mul`)
         line(`i32.add`)
@@ -493,8 +565,7 @@ export function emit(context: ast.Context): string {
             }
           } else {
             for (let i = initializer.values.length - 1; i >= 0; i--) {
-              visit(initializer.values[i]) // addr of value to store
-              emitPushMem(elementType)
+              visit(initializer.values[i]) // pushes to stack and returns mutated __stack_ptr__
               line(`drop`)
             }
           }
@@ -619,6 +690,14 @@ export function emit(context: ast.Context): string {
       }
 
       // statements
+      //
+      // TODO: Track any unbound temporaries pushed to the puff stack and pop them.
+      // E.g. for code like this:
+      // ```
+      // var x = [1, 2, 3][0];
+      // ```
+      // We should either not be pushing [1, 2, 3] on the stack, or removing it once
+      // we extract its length. Not sure if this is easiest to do on statement boundaries.
       case ast.NodeKind.BLOCK_STMT: {
         const op = node as ast.BlockStmt
         op.statements.forEach((statement) => {
@@ -725,28 +804,8 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.PRINT_STMT: {
         const op = node as ast.PrintStmt
         visit(op.expression)
-        switch (op.expression.resolvedType?.category) {
-          case ast.TypeCategory.BYTE: {
-            // mask 24 MSB before logging
-            line(`i32.const 0x000000FF`)
-            line(`i32.and`)
-            line(`call ${wasmId("__log_i32__")}`)
-            break
-          }
-          case ast.TypeCategory.BOOL:
-          case ast.TypeCategory.INT: {
-            line(`call ${wasmId("__log_i32__")}`)
-            break
-          }
-          case ast.TypeCategory.FLOAT: {
-            line(`call ${wasmId("__log_f32__")}`)
-            break
-          }
-          default: {
-            // TODO: Handle array types (esp. strings)
-            throw new Error("Unexpected type for print")
-          }
-        }
+        emitPrintVal(op.expression.resolvedType!)
+        line(`call ${wasmId("__flush__")}`)
         break
       }
       case ast.NodeKind.RETURN_STMT: {
@@ -801,8 +860,12 @@ export function emit(context: ast.Context): string {
   {
     indent()
 
-    line(`(import "console" "log" (func ${wasmId("__log_i32__")} (param i32)))`)
-    line(`(import "console" "log" (func ${wasmId("__log_f32__")} (param f32)))`)
+    line(`(import "io" "log" (func ${wasmId("__log_i32__")} (param i32)))`)
+    line(`(import "io" "log" (func ${wasmId("__log_f32__")} (param f32)))`)
+    line(`(import "io" "putchar" (func ${wasmId("__putc__")} (param i32)))`)
+    line(`(import "io" "putf" (func ${wasmId("__putf__")} (param f32)))`)
+    line(`(import "io" "puti" (func ${wasmId("__puti__")} (param i32)))`)
+    line(`(import "io" "flush" (func ${wasmId("__flush__")}))`)
 
     line(`(memory $memory ${INITIAL_PAGES})`)
 

@@ -259,12 +259,21 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           if (elementType) {
             op.resolvedType = ast.arrayType(elementType, initializer.values.length)
           } else {
-            resolveError(op.bracket, "Cannot infer type for literal.")
+            if (initializer.values.length === 0) {
+              resolveError(op.bracket, "Zero-length arrays are not allowed.")
+            } else {
+              resolveError(op.bracket, "Cannot infer type for literal.")
+            }
             op.resolvedType = ast.ErrorType
           }
         } else {
           resolveNode(initializer.value, isLiveAtEnd)
-          op.resolvedType = ast.arrayType(initializer.value.resolvedType!, initializer.length)
+          if (initializer.length === 0) {
+            resolveError(op.bracket, "Zero-length arrays are not allowed.")
+            op.resolvedType = ast.ErrorType
+          } else {
+            op.resolvedType = ast.arrayType(initializer.value.resolvedType!, initializer.length)
+          }
         }
         break
       }
@@ -511,7 +520,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         }
         if (op.type === null) {
           op.type = op.initializer.resolvedType!
-        } else if (!ast.isEqual(op.type, op.initializer.resolvedType!)) {
+        } else if (!ast.isEqual(op.type, op.initializer.resolvedType!) && !ast.isEqual(op.initializer.resolvedType!, ast.ErrorType)) {
           // TODO: allow implicit conversions when possible
           resolveError(
             op.name, 

@@ -8,24 +8,6 @@ import { ReportError, UTF8Codec } from './src/util'
 import * as ast from './src/nodes'
 import { TokenType } from './src/tokens'
 
-describe("basic WASM test", () => {
-  test("adds input numbers", async () => {
-    fs.writeFileSync(
-      "test/basic.wat",
-      `
-      (module
-        (func (export "add") (param i32 i32) (result i32)
-          local.get 0
-          local.get 1
-          i32.add))
-      `.trim()
-    )
-    child_process.execSync(`npx -p wabt wat2wasm test/basic.wat -o test/basic.wasm`)
-    const instance = await WebAssembly.instantiate(fs.readFileSync("test/basic.wasm"), {})
-    expect(instance.instance.exports.add(1, 2)).toBe(3)
-  })
-})
-
 enum Passes {
   SCAN =            1 << 0,
   PARSE =           1 << 1,
@@ -812,11 +794,17 @@ describe("type checking", () => {
     var g = [[1, 2, 3], [4, 5, 6]]; // ok
     var h [[int; 3]; 2] = [[1, 2, 3], [4, 5, 6]]; // ok
     var i = [[1, 2], [1]]; // err
+    var j = []; // err
+    var k [int; 0] = []; // err
+    var l = [-1; 0]; // err
     `,
     [
       "3: Cannot infer type for literal.",
       "6: Cannot assign value of type '[int; 5]' to variable of type '[bool; 5]'.",
-      "9: Cannot infer type for literal."
+      "9: Cannot infer type for literal.",
+      "10: Zero-length arrays are not allowed.",
+      "11: Zero-length arrays are not allowed.",
+      "12: Zero-length arrays are not allowed."
     ])
   })
 
@@ -1477,6 +1465,25 @@ describe("end to end", () => {
     `,
     `
 [2, 3, 10, 11, 20, 21]
+`.trim() + "\n")
+  })
+
+  test("arrays 5", async () => {
+    await expectOutput(`
+    def inc(arr [int; 2]) [int; 2] {
+      arr[0] = arr[0] + 1;
+      arr[1] = arr[1] + 1;
+      return arr;
+    }
+    def main() {
+      var x = [1, 2];
+      print inc(x);
+      print x;
+    }
+    `,
+    `
+[2, 3]
+[1, 2]
 `.trim() + "\n")
   })
 })

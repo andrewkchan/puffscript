@@ -816,9 +816,21 @@ export function emit(context: ast.Context): string {
           })
           line(`global.get ${wasmId("__stack_ptr__")}`)
           line(`local.set ${wasmId("__base_ptr__")}`)
+          
+          // Copy + push nonscalar args to stack
+          op.params.forEach((param) => {
+            if (!ast.isScalar(param.type)) {
+              const symbol = op.scope.lookup(param.name.lexeme, (_) => true)
+              line(`local.get ${wasmId(param.name.lexeme, symbol!.id)}`)
+              emitPushMem(param.type)
+              line(`local.set ${wasmId(param.name.lexeme, symbol!.id)}`)
+            }
+          })
+
           op.body.forEach((statement) => {
             visit(statement)
           })
+
           line(`local.get ${wasmId("__base_ptr__")}`)
           line(`global.set ${wasmId("__stack_ptr__")}`)
           dedent()

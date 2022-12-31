@@ -1,9 +1,11 @@
-import { ReportError } from './util'
+import { ReportError, UTF8Codec } from './util'
 import { TokenType } from './tokens'
 import { Token } from './scanner'
 import * as ast from './nodes'
 
 class ParseError extends Error {}
+
+const codec = new UTF8Codec()
 
 // 1. Construct AST from stream of tokens
 // 2. Create scopes for blocks and functions
@@ -605,6 +607,18 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (match(TokenType.STRING)) {
       // TODO fixme
       throw parseError("Strings not yet supported")
+    }
+    if (match(TokenType.SINGLE_QUOTE_STRING)) {
+      const c = previous().literal
+      if (c.length !== 1) {
+        throw parseError("Invalid character literal (use double quotes for strings).")
+      } else if (!codec.isValidASCII(c)) {
+        throw parseError("Invalid character literal (only ASCII characters allowed).")
+      }
+      return ast.literalExpr({
+        value: codec.encodeASCIIChar(c),
+        type: ast.ByteType
+      })
     }
     if (match(TokenType.IDENTIFIER)) {
       return ast.variableExpr({

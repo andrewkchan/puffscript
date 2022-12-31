@@ -17,7 +17,7 @@ Puffscript is a toy imperative programming language that compiles to WebAssembly
 - int: 32-bit signed integer
 - float: 32-bit float
 - byte: 8-bit un-signed integer
-- bool: “true” or “false”. Stored as 8-bit values
+- bool: 8-bits, “true” or “false”
 
 Primitives can be casted to one another via call syntax, e.g.
 
@@ -25,14 +25,7 @@ Primitives can be casted to one another via call syntax, e.g.
 var a = float(5);
 ```
 
-Currently, only decimal literals for integers, bytes, and floats are supported. Floats are distinguished from ints/bytes by a decimal point: `.`
-
-TODOs:
-
-- Hexadecimal literals (e.g. `0xF2`) for ints/bytes/floats
-- ASCII character literals for bytes
-- Exponent literals (e.g. `1e-5`) for floats
-- Special value literals (e.g. `NaN`, `inf`) for floats
+Decimal and hex literals for integers, bytes, and floats are supported. Floats are distinguished from ints/bytes by a decimal point: `.`
 
 **Variables**
 
@@ -45,11 +38,6 @@ var a = returnsFloat();
 ```
 
 Variables can be global or local. Like Zig, global variables can be declared in any order, but must have acyclic initializer dependencies so that they can be initialized at runtime in dependency order. Ordering of non-dependent global initializers is undefined so be careful about side effects.
-
-TODOs:
-
-- Allow optional initializers for primitives with default initialization when omitted
-- Implicit casting when initializing variables with explicit type annotations
 
 **Arrays**
 

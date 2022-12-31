@@ -31,4 +31,11 @@ export class UTF8Codec {
     this.encoder.encodeInto(char, this.charBuf)
     return this.charBuf[0]
   }
+
+  isValidASCII(char: string): boolean {
+    if (char.length !== 1) {
+      throw new Error("Expected character")
+    }
+    return this.encoder.encodeInto(char, this.charBuf).written > 0
+  }
 }

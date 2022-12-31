@@ -360,6 +360,18 @@ describe("parser", () => {
       "2: Hex literal does not fit in any numeric type.",
     ])
   })
+
+  test("Character literals", () => {
+    expectParseErrors(`
+    var x = 'h'; // ok
+    var y = 'hello'; // error
+    var z = 'é'; // error
+    `,
+    [
+      "2: Invalid character literal (use double quotes for strings).",
+      "3: Invalid character literal (only ASCII characters allowed)."
+    ])
+  })
 })
 
 describe("type checking", () => {
@@ -1161,12 +1173,14 @@ describe("end to end", () => {
       var f = 3.1415927410125732;
       var arr = [1,2,3];
       var ih = 0xAABBCCDD;
+      var bt_ascii = 'a';
       print bt;
       print bl;
       print i;
       print f;
       print arr;
       print ih;
+      print bt_ascii;
     }
     `,
     `
@@ -1176,6 +1190,7 @@ describe("end to end", () => {
 3.1415927410125732
 [1, 2, 3]
 -1430532899
+97
 `.trim() + "\n")
   })
 

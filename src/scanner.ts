@@ -104,6 +104,9 @@ export function scanTokens(source: string, reportError: ReportError): Array<Toke
         } else if (t === TokenType.STRING) {
           const val = lexeme.substring(1, lexeme.length - 1)
           tokens.push(new Token(t, lexeme, val, current, source))
+        } else if (t === TokenType.SINGLE_QUOTE_STRING) {
+          const val = lexeme.substring(1, lexeme.length - 1)
+          tokens.push(new Token(t, lexeme, val, current, source))
         } else if (t === TokenType.NUMBER_DECIMAL) {
           const val = parseFloat(lexeme)
           tokens.push(new Token(t, lexeme, val, current, source))

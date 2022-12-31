@@ -208,6 +208,17 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         op.resolvedType = op.type
         break
       }
+      case ast.NodeKind.DEREF_EXPR: {
+        const op = node as ast.DerefExpr
+        resolveNode(op.value, isLiveAtEnd)
+        if (op.value.resolvedType?.category === ast.TypeCategory.POINTER) {
+          op.resolvedType = op.value.resolvedType.elementType
+        } else {
+          resolveError(op.operator, `Invalid operand for dereferencing operator '~'.`)
+          op.resolvedType = ast.ErrorType
+        }
+        break
+      }
       case ast.NodeKind.GROUP_EXPR: {
         const op = node as ast.GroupExpr
         resolveNode(op.expression, isLiveAtEnd)
@@ -267,7 +278,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           // Note resolving an empty array will always throw a resolve error
           // even if a type specifier for e.g. declaration or return value
           // is given. Callers should not resolve the literal in that case.
-          if (elementType) {
+          if (elementType && ast.isValidElementType(elementType)) {
             op.resolvedType = ast.arrayType(elementType, initializer.values.length)
           } else {
             if (initializer.values.length === 0) {
@@ -281,6 +292,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           resolveNode(initializer.value, isLiveAtEnd)
           if (initializer.length === 0) {
             resolveError(op.bracket, "Zero-length arrays are not allowed.")
+            op.resolvedType = ast.ErrorType
+          } else if (!ast.isValidElementType(initializer.value.resolvedType!)) {
+            resolveError(op.bracket, "Cannot infer type for literal.")
             op.resolvedType = ast.ErrorType
           } else {
             op.resolvedType = ast.arrayType(initializer.value.resolvedType!, initializer.length)
@@ -313,20 +327,46 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         const op = node as ast.UnaryExpr
         switch (op.operator.lexeme) {
           case "!": {
-            op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.BoolType, op.operator)
+            op.value = resolveNodeWithCoercion(op.value, isLiveAtEnd, ast.BoolType, op.operator)
             op.resolvedType = ast.BoolType
             break
           }
           case "-": {
-            resolveNode(op.right, isLiveAtEnd)
-            if (!ast.isNumeric(op.right.resolvedType!)) {
+            resolveNode(op.value, isLiveAtEnd)
+            if (!ast.isNumeric(op.value.resolvedType!)) {
               resolveError(op.operator, `Invalid operand type for unary operator '-'.`)
               op.resolvedType = ast.IntType
             } else {
-              if (ast.isEqual(op.right.resolvedType!, ast.ByteType)) {
-                op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.IntType, op.operator)
+              if (ast.isEqual(op.value.resolvedType!, ast.ByteType)) {
+                op.value = resolveNodeWithCoercion(op.value, isLiveAtEnd, ast.IntType, op.operator)
               }
-              op.resolvedType = op.right.resolvedType
+              op.resolvedType = op.value.resolvedType
+            }
+            break
+          }
+          case "&": {
+            resolveNode(op.value, isLiveAtEnd)
+            if (ast.isValidElementType(op.value.resolvedType!)) {
+              if (op.value.kind === ast.NodeKind.VARIABLE_EXPR) {
+                const symbol = op.value.resolvedSymbol
+                if (symbol?.kind === ast.SymbolKind.PARAM || symbol?.kind === ast.SymbolKind.VARIABLE) {
+                  symbol.isAddressTaken = true
+                }
+                op.resolvedType = {
+                  category: ast.TypeCategory.POINTER,
+                  elementType: op.value.resolvedType!
+                }
+              } else if (op.value.kind === ast.NodeKind.INDEX_EXPR) {
+                op.resolvedType = {
+                  category: ast.TypeCategory.POINTER,
+                  elementType: op.value.resolvedType!
+                }
+              }
+            } 
+            
+            if (op.resolvedType === null) {
+              resolveError(op.operator, `Invalid operand type for unary operator '&'.`)
+              op.resolvedType = ast.ErrorType
             }
             break
           }

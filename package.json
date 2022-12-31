@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "tsc && node dist/index.js",
-    "test": "tsc && jest dist/"
+    "test": "tsc && jest dist/",
+    "test-debug": "tsc && node --inspect-brk node_modules/.bin/jest dist/"
   },
   "author": "andrewkchan",
   "license": "ISC",

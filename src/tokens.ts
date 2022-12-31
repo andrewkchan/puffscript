@@ -23,6 +23,7 @@ export enum TokenType {
   SLASH,
   STAR,
   PERCENT,
+  TILDE,
 
   // One or two character tokens.
   BANG_EQUAL,
@@ -34,6 +35,7 @@ export enum TokenType {
   LESS_EQUAL,
   LESS,
   AMP_AMP,
+  AMP,
   BAR_BAR,
 
   // Keywords.
@@ -78,6 +80,7 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.SLASH]: /\//y,
   [TokenType.STAR]: /\*/y,
   [TokenType.PERCENT]: /%/y,
+  [TokenType.TILDE]: /~/y,
 
   // One or two character tokens.
   [TokenType.BANG_EQUAL]: /!=/y,
@@ -89,6 +92,7 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.LESS_EQUAL]: /<=/y,
   [TokenType.LESS]: /</y,
   [TokenType.AMP_AMP]: /&&/y,
+  [TokenType.AMP]: /&/y,
   [TokenType.BAR_BAR]: /\|\|/y,
 
   // Keywords.

@@ -43,7 +43,7 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes):
   }
 
   const tokens = scanTokens(source, reportError)
-  
+
   for (const token of tokens) {
     if (token.type == TokenType.IDENTIFIER && token.lexeme === "int") {
       console.log(token.lineStr())
@@ -66,7 +66,7 @@ async function expectOutput(source: string, expectedOutput: string) {
     const code = emit(context)
     fs.writeFileSync("test/tmp.wat", code)
     child_process.execSync(`npx -p wabt wat2wasm test/tmp.wat -o test/tmp.wasm`)
-    
+
     const codec = new UTF8Codec()
     let ioBuffer = ""
     let output = ""
@@ -110,15 +110,15 @@ describe("parser", () => {
     def main() {}
     var e = -4.0;
     `,
-    "(" + 
-      "(var a 1) " + 
-      "(var b 2) " + 
-      "(def foo ((param x int) (param y byte)) ()) " + 
-      "(var c true) " + 
-      "(def bar ((param z bool)) ()) " + 
-      "(var d 5.0) " + 
-      "(def main () ()) " + 
-      "(var e (- 4.0))" + 
+    "(" +
+      "(var a 1) " +
+      "(var b 2) " +
+      "(def foo ((param x int) (param y byte)) ()) " +
+      "(var c true) " +
+      "(def bar ((param z bool)) ()) " +
+      "(var d 5.0) " +
+      "(def main () ()) " +
+      "(var e (- 4.0))" +
     ")")
   })
 
@@ -126,39 +126,39 @@ describe("parser", () => {
     expectAST(`
     var a = 1 + 2 * -(3.5 - -7.0) / (float(1) + 5.) == int(5.0) > -4 || x && !!foo(bar(x, y), foo() && bar());
     `,
-    "(" + 
-      "(var a " + 
-        "(|| " + 
-          "(== " + 
+    "(" +
+      "(var a " +
+        "(|| " +
+          "(== " +
             "(+ " +
               "1 " +
-              "(/ " + 
-                "(* " + 
-                  "2 " + 
-                  "(- ((- 3.5 (- 7.0))))" + 
+              "(/ " +
+                "(* " +
+                  "2 " +
+                  "(- ((- 3.5 (- 7.0))))" +
                 ") " +
-                "((+ (float 1) 5.0))" + 
-              ")" + 
+                "((+ (float 1) 5.0))" +
+              ")" +
             ") " +
-            "(> (int 5.0) (- 4))" + 
-          ") " + 
-          "(&& " + 
-            "x " + 
-            "(! (! " + 
-              "(call " + 
-                "foo " + 
-                "(" + 
-                  "(call bar (x y)) " + 
-                  "(&& " + 
-                    "(call foo ()) " + 
-                    "(call bar ())" + 
-                  ")" + 
-                ")" + 
-              ")" + 
-            "))" + 
-          ")" + 
-        ")" + 
-      ")" + 
+            "(> (int 5.0) (- 4))" +
+          ") " +
+          "(&& " +
+            "x " +
+            "(! (! " +
+              "(call " +
+                "foo " +
+                "(" +
+                  "(call bar (x y)) " +
+                  "(&& " +
+                    "(call foo ()) " +
+                    "(call bar ())" +
+                  ")" +
+                ")" +
+              ")" +
+            "))" +
+          ")" +
+        ")" +
+      ")" +
     ")")
   })
 
@@ -166,14 +166,14 @@ describe("parser", () => {
     expectAST(`
     var a = 1 + 2 - 3 + 4 - 5;
     `,
-    "(" + 
-      "(var a " + 
-        "(- " + 
-          "(+ " + 
+    "(" +
+      "(var a " +
+        "(- " +
+          "(+ " +
             "(- (+ 1 2) 3) " +
             "4" +
-          ") " + 
-          "5"+ 
+          ") " +
+          "5"+
         ")" +
       ")" +
     ")")
@@ -181,14 +181,14 @@ describe("parser", () => {
     expectAST(`
     var a = 1 * 2 / 3 * 4 / 5;
     `,
-    "(" + 
-      "(var a " + 
-        "(/ " + 
-          "(* " + 
+    "(" +
+      "(var a " +
+        "(/ " +
+          "(* " +
             "(/ (* 1 2) 3) " +
             "4" +
-          ") " + 
-          "5"+ 
+          ") " +
+          "5"+
         ")" +
       ")" +
     ")")
@@ -266,13 +266,13 @@ describe("parser", () => {
     def main() {
       while (foo() == bar()) loop(); // ok
       while (foo() == bar()) { // ok
-        loop(); 
+        loop();
       }
       while (var i = 0) loop(); // error
       while () loop(); // error
       for (;;) loop(); // ok
       for (;;) { // ok
-        loop(); 
+        loop();
       }
       for (var p = n; p != end; p = next(n)) loop(); // ok
       for (var p = n;;) loop(); // ok
@@ -334,7 +334,7 @@ describe("parser", () => {
 
 describe("type checking", () => {
   const expectResolveErrors = (source: string, expectedErrors: string[]) => expectErrors(source, expectedErrors, Passes.THROUGH_RESOLVE)
-  
+
   test("Operators", () => {
     expectResolveErrors(`
     var u = 1.0 == false;
@@ -400,7 +400,7 @@ describe("type checking", () => {
     `,
     [/* no errors*/])
   })
-  
+
   test("Parameter mismatch", () => {
     expectResolveErrors(`
     def foo(x int, y int) {}
@@ -794,7 +794,7 @@ describe("type checking", () => {
       }
       return !isEven(n-1);
     }
-    `, 
+    `,
     [/* no errors */])
   })
 
@@ -851,6 +851,8 @@ describe("type checking", () => {
     var j = []; // err
     var k [int; 0] = []; // err
     var l = [-1; 0]; // err
+    var m = [foo(), foo()]; // err
+    def foo() {}
     `,
     [
       "3: Cannot infer type for literal.",
@@ -858,7 +860,8 @@ describe("type checking", () => {
       "9: Cannot infer type for literal.",
       "10: Zero-length arrays are not allowed.",
       "11: Zero-length arrays are not allowed.",
-      "12: Zero-length arrays are not allowed."
+      "12: Zero-length arrays are not allowed.",
+      "13: Cannot infer type for literal."
     ])
   })
 
@@ -893,6 +896,89 @@ describe("type checking", () => {
       "4: Cannot assign value of type '[int; 3]' to variable of type 'int'.",
       "5: Cannot assign value of type 'int' to variable of type '[int; 3]'.",
       "10: Cannot implicitly convert operand to '[int; 3]'."
+    ])
+  })
+
+  test("address-of operator", () => {
+    expectResolveErrors(`
+    var g = 1;
+    var ag = &g; // ok
+    var f1 = &1; // error
+    var f2 = &(g + 1); // error
+    var f3 = &foo(); // error
+    var f4 = &bar(); // error
+    var f5 = &foo; // error
+    def foo() int {
+      return 1;
+    }
+    def bar() {}
+    def main() {
+      var x = 1;
+      var arr = [1, 2, 3];
+      var ax = &x; // ok
+      var acx = &bool(x); // error
+      var aarr = &arr; // ok
+      var aarr0 = &arr[0]; // ok
+      var aag = &ag; // ok
+      var fa = &[1, 2, 3]; // error
+    }
+    def foobar(x int, arr [int; 2]) {
+      var px = &x; // ok
+      var parr = &arr; // ok
+    }
+    `,
+    [
+      "3: Invalid operand type for unary operator '&'.",
+      "4: Invalid operand type for unary operator '&'.",
+      "5: Invalid operand type for unary operator '&'.",
+      "6: Invalid operand type for unary operator '&'.",
+      "7: Invalid operand type for unary operator '&'.",
+      "16: Invalid operand type for unary operator '&'.",
+      "20: Invalid operand type for unary operator '&'.",
+    ])
+  })
+
+  test("dereferencing rval variables", () => {
+    expectResolveErrors(`
+    def main() {
+      var x = 5;
+      var y = true;
+      var mat = [[1, 2], [3, 4]];
+      var arrp [int~; 2] = [&x, &x];
+
+      var px int~ = &x;
+      var py bool~ = &y;
+      var pmat [[int; 2]; 2]~ = &mat;
+      var prow [int; 2]~ = &mat[0];
+      var pel int~ = &mat[0][0];
+      var arrpel int~ = arrp[0];
+      var pp int~~ = &px;
+
+      print x~; // error
+      var dpx int = px~; // ok
+      print y~; // error
+      var dpy bool = py~; // ok
+      print mat~; // error
+      var dpmat [[int; 2]; 2] = pmat~; // ok
+      print mat[0]~; // error
+      var dprow [int; 2] = prow~; // ok
+      print mat[0][0]~; // error
+      var dpel int = pel~; // ok
+      var darrp int = arrp[0]~; // ok
+      var dpp int~ = pp~; // ok
+      var xdpp int = pp~; // error
+      var ddpp int = pp~~; // ok
+      print pp~~~; // error
+    }
+    `,
+    [
+      "15: Invalid operand for dereferencing operator '~'.",
+      "17: Invalid operand for dereferencing operator '~'.",
+      "19: Invalid operand for dereferencing operator '~'.",
+      "21: Invalid operand for dereferencing operator '~'.",
+      "23: Invalid operand for dereferencing operator '~'.",
+      "27: Cannot assign value of type 'int~' to variable of type 'int'.",
+      "29: Invalid operand for dereferencing operator '~'.",
     ])
   })
 })
@@ -1587,6 +1673,255 @@ describe("end to end", () => {
     `
 [2, 3]
 [1, 2]
+`.trim() + "\n")
+  })
+
+  test("global arrays 1", async () => {
+    await expectOutput(`
+    var a = [[1, 2, 3],
+             [4, 5, 6]];
+    def main() {
+      print a;
+      a[0][0] = a[0][1] = a[0][2] = a[1][1];
+      print a;
+      print a[0][0];
+      a[1][1] = 1337;
+      print a;
+      print a[0][0];
+      a[0] = [7, 8, 9];
+      print a;
+      var b = a[0];
+      print b;
+      b = a[1];
+      print b;
+      print a;
+    }
+    `,
+    `
+[[1, 2, 3], [4, 5, 6]]
+[[5, 5, 5], [4, 5, 6]]
+5
+[[5, 5, 5], [4, 1337, 6]]
+5
+[[7, 8, 9], [4, 1337, 6]]
+[7, 8, 9]
+[4, 1337, 6]
+[[7, 8, 9], [4, 1337, 6]]
+`.trim() + "\n")
+  })
+
+  test("pointers 1: loading primitive vars", async () => {
+    await expectOutput(`
+    var gi = 1337;
+    var gf = 3.5;
+    var gb = true;
+    var gc = byte(1);
+    def main() {
+      var i = 1338;
+      var f = 4.5;
+      var b = true;
+      var c = byte(2);
+
+      var pi = &i;
+      var pf = &f;
+      var pb = &b;
+      var pc = &c;
+
+      print pi~;
+      print pf~;
+      print pb~;
+      print pc~;
+
+      i = 1339;
+      f = 5.5;
+      b = false;
+      c = byte(3);
+
+      print pi~;
+      print pf~;
+      print pb~;
+      print pc~;
+
+      pi = &gi;
+      pf = &gf;
+      pb = &gb;
+      pc = &gc;
+
+      print pi~;
+      print pf~;
+      print pb~;
+      print pc~;
+
+      gi = 1340;
+      gf = 6.5;
+      gb = false;
+      gc = byte(4);
+
+      print pi~;
+      print pf~;
+      print pb~;
+      print pc~;
+    }
+    `,
+    `
+1338
+4.5
+1
+2
+1339
+5.5
+0
+3
+1337
+3.5
+1
+1
+1340
+6.5
+0
+4
+`.trim() + "\n")
+  })
+
+  test("pointers 2: storing primitive vars", async () => {
+    await expectOutput(`
+    var gi = 1337;
+    var gf = 3.5;
+    var gb = true;
+    var gc = byte(1);
+    def main() {
+      var i = 1338;
+      var f = 4.5;
+      var b = true;
+      var c = byte(2);
+
+      var pi = &i;
+      var pf = &f;
+      var pb = &b;
+      var pc = &c;
+
+      print i;
+      print f;
+      print b;
+      print c;
+
+      pi~ = 1339;
+      pf~ = 5.5;
+      pb~ = false;
+      pc~ = byte(3);
+
+      print i;
+      print f;
+      print b;
+      print c;
+
+      pi = &gi;
+      pf = &gf;
+      pb = &gb;
+      pc = &gc;
+
+      print gi;
+      print gf;
+      print gb;
+      print gc;
+
+      pi~ = 1340;
+      pf~ = 6.5;
+      pb~ = false;
+      pc~ = byte(4);
+
+      print gi;
+      print gf;
+      print gb;
+      print gc;
+    }
+    `,
+    `
+1338
+4.5
+1
+2
+1339
+5.5
+0
+3
+1337
+3.5
+1
+1
+1340
+6.5
+0
+4
+`.trim() + "\n")
+  })
+
+  test("pointers 3: out vars", async () => {
+    await expectOutput(`
+    def inc(x int~) {
+      x~ = x~ + 1;
+    }
+    def main() {
+      var x = 1337;
+      var y = 42;
+      inc(&x);
+      inc(&y);
+      print x;
+      print y;
+    }
+    `,
+    `
+1338
+43
+`.trim() + "\n")
+  })
+
+  test("pointers 4: loading and storing array elements", async () => {
+    await expectOutput(`
+    def main() {
+      var mat = [[1, 2], [3, 4]];
+      var p [int; 2]~ = &mat[0];
+      print p~; // [1, 2]
+      p~ = [1337, 1338];
+      print mat[0]; // [1337, 1338]
+      var row = p~;
+      print row; // [1337, 1338]
+      mat[0][0] = 1111;
+      print mat; // [[1111, 1338], [3, 4]]
+      print row; // [1337, 1338]
+      var mat2 = [p~, p~];
+      print mat2; // [[1111, 1338], [1111, 1338]]
+      mat2[0][0] = 0;
+      print mat2; // [[0, 1338], [1111, 1338]]
+    }
+    `,
+    `
+[1, 2]
+[1337, 1338]
+[1337, 1338]
+[[1111, 1338], [3, 4]]
+[1337, 1338]
+[[1111, 1338], [1111, 1338]]
+[[0, 1338], [1111, 1338]]
+`.trim() + "\n")
+  })
+
+  test("pointers 5: pointers to pointers", async () => {
+    await expectOutput(`
+    def main() {
+      var a = 1111;
+      var b = 2222;
+      var r [int~; 2] = [&a, &b];
+      var pa int~~ = &r[0];
+      pa~~ = 3333;
+      print a; // --> 3333
+      pa~ = &b;
+      print r[1]~; // --> 2222
+    }
+    `,
+    `
+3333
+2222
 `.trim() + "\n")
   })
 })

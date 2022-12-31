@@ -3,6 +3,23 @@ import { assertUnreachable, UTF8Codec } from './util'
 
 const codec = new UTF8Codec()
 
+////////////////////////////////////////////////////
+// Puff memory layout
+////////////////////////////////////////////////////
+// ----------------------- 0
+//
+// -----------------------
+//            ^ grows toward zero
+//        stack (locals)
+// ----------------------- STACK_TOP_BYTE_OFFSET
+//        data (globals)
+// ----------------------- DATA_TOP_BYTE_OFFSET
+//
+//
+//
+// ----------------------- max byte offset
+////////////////////////////////////////////////////
+//
 // The Puff "abstract machine", like C, has its own stack which
 // is separate from the WASM stack and lives inside linear memory.
 // "Locals" in WASM take the place of registers, and since
@@ -14,6 +31,7 @@ const codec = new UTF8Codec()
 // Like in C and most other models, Puff's stack grows downwards.
 // The stack pointer is stored as $__stack_ptr__ WASM global.
 const STACK_TOP_BYTE_OFFSET = 512*1024
+const DATA_TOP_BYTE_OFFSET = 1024*1024
 
 const INITIAL_PAGES = (8*1024*1024) / (64*1024);
 
@@ -24,7 +42,7 @@ enum ExprMode {
 
 // Returns the WASM type used to represent values of the given type in the WASM (host) stack.
 // This may be different than the WASM type representing the value in the Puff (in-memory) stack.
-// E.g. integer arrays are represented by sequences of i32 in the in-memory stack but only 
+// E.g. integer arrays are represented by sequences of i32 in the in-memory stack but only
 // represented by a single i32 address in the WASM stack.
 function registerType(type: ast.Type): "i32" | "f32" {
   switch (type.category) {
@@ -57,10 +75,24 @@ function wasmId(name: string, mangler?: number): string {
   return identifier
 }
 
+function isVariableInRegister(symbol: ast.VariableSymbol | ast.ParamSymbol): boolean {
+  if (symbol.isAddressTaken) {
+    return false
+  }
+  const type = symbol.kind === ast.SymbolKind.PARAM ?
+    symbol.param.type : symbol.node.type
+  return type !== null && ast.isScalar(type)
+}
+
 const DEBUG_COMMENTS = true
 
 // Emits WAT code for the resolved context.
 export function emit(context: ast.Context): string {
+  // stores locations of globals.
+  const globalLocs: Map<ast.Symbol, number> = new Map()
+  // stores distance of locals from function base pointer.
+  // distances are positive and must be added to base pointer to get runtime location.
+  let localLocs: Map<ast.Symbol, number> | null = null
 
   const INDENT_UNIT = "  "
   let _indent = ""
@@ -102,7 +134,7 @@ export function emit(context: ast.Context): string {
     // return stack ptr
     line(`global.get ${wasmId("__stack_ptr__")}`)
   }
-  
+
   // Emit code to:
   // 1. push a scalar value of the given type to the in-memory stack (+adjust __stack_ptr__)
   // 2. return the new stack ptr, which points to the pushed value
@@ -122,6 +154,15 @@ export function emit(context: ast.Context): string {
     const teeRegister = "__tee_" + register + "__"
     line(`local.tee ${wasmId(teeRegister)}`)
     line(`local.get ${wasmId(teeRegister)}`)
+  }
+
+  // Emit code to swap stack[n] and stack[n-1].
+  // PRECOND: inside a function.
+  function emitSwapTop(topRegister: "i32" | "f32", secondRegister: "i32" | "f32") {
+    line(`local.set ${wasmId("__swapa_" + topRegister + "__")}`)
+    line(`local.set ${wasmId("__swapb_" + secondRegister + "__")}`)
+    line(`local.get ${wasmId("__swapa_" + topRegister + "__")}`)
+    line(`local.get ${wasmId("__swapb_" + secondRegister + "__")}`)
   }
 
   // Emit code to store a scalar value to given address.
@@ -194,6 +235,83 @@ export function emit(context: ast.Context): string {
     line(`global.set ${wasmId("__stack_ptr__")}`)
   }
 
+  // Emit code to compute the address of a local or global variable.
+  // Returns address.
+  function emitLoc(symbol: ast.VariableSymbol | ast.ParamSymbol) {
+    if (symbol.kind === ast.SymbolKind.VARIABLE && symbol.isGlobal) {
+      const loc = globalLocs.get(symbol)
+      if (loc) {
+        line(`i32.const ${loc}`)
+      } else {
+        throw new Error(`Cannot find global '${symbol.node.name.lexeme}' in emitLoc`)
+      }
+    } else {
+      const offset = localLocs?.get(symbol)
+      if (offset) {
+        line(`local.get ${wasmId("__base_ptr__")}`)
+        line(`i32.const ${offset}`)
+        line(`i32.sub`)
+      } else {
+        throw new Error(`Cannot find local in emitLoc`)
+      }
+    }
+  }
+
+  // Emit code to set the given symbol to the value currently at top of the host WASM stack.
+  // Returns the set value or address of non-scalar symbol.
+  // PRECOND:
+  // - stack[n]: Scalar value or address of non-scalar value to copy
+  function emitSetSymbol(symbol: ast.VariableSymbol | ast.ParamSymbol) {
+    const varSymbol = symbol.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
+    const paramSymbol = symbol.kind === ast.SymbolKind.PARAM ? symbol as ast.ParamSymbol : null
+    if (isVariableInRegister(symbol)) {
+      if (varSymbol && varSymbol.isGlobal) {
+        emitDupTop(registerType(varSymbol.node.type!))
+        line(`global.set ${wasmId(varSymbol.node.name.lexeme)}`)
+      } else {
+        const name = varSymbol?.node.name.lexeme ?? paramSymbol?.param.name.lexeme
+        line(`local.tee ${wasmId(name!, symbol.id)}`)
+      }
+    } else {
+      const type = varSymbol?.node.type ?? paramSymbol?.param.type
+      if (ast.isScalar(type!)) {
+        emitDupTop(registerType(type!)) // for return value
+        emitLoc(symbol)
+        emitSwapTop("i32", registerType(type!))
+        emitStoreScalar(type!)
+      } else {
+        emitLoc(symbol)
+        line(`i32.const ${ast.sizeof(type!)}`)
+        line(`call ${wasmId("__memcpy__")}`)
+        emitLoc(symbol) // return dest address
+      }
+    }
+  }
+
+  // Emits code to get the given symbol.
+  // - If symbol is scalar, returns value.
+  // - If symbol is non-scalar, returns address.
+  function emitGetSymbol(symbol: ast.VariableSymbol | ast.ParamSymbol) {
+    const varSymbol = symbol.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
+    const paramSymbol = symbol.kind === ast.SymbolKind.PARAM ? symbol as ast.ParamSymbol : null
+    if (isVariableInRegister(symbol)) {
+      if (varSymbol && varSymbol.isGlobal) {
+        line(`global.get ${wasmId(varSymbol.node.name.lexeme)}`)
+      } else {
+        const name = varSymbol?.node.name.lexeme ?? paramSymbol?.param.name.lexeme
+        line(`local.get ${wasmId(name!, symbol.id)}`)
+      }
+    } else {
+      emitLoc(symbol)
+      const type = varSymbol?.node.type ?? paramSymbol?.param.type
+      if (ast.isScalar(type!)) {
+        emitLoadScalar(type!)
+      } else {
+        // Nothing to do, return address above
+      }
+    }
+  }
+
   // Emit code to print the given ASCII character.
   // No return value.
   function emitPrintASCIIChars(chars: string) {
@@ -251,7 +369,7 @@ export function emit(context: ast.Context): string {
         break
       }
       default: {
-        // TODO: Handle strings
+        // TODO: Handle strings and pointers
         throw new Error("Unexpected type for print")
       }
     }
@@ -296,20 +414,13 @@ export function emit(context: ast.Context): string {
         if (op.left.kind === ast.NodeKind.VARIABLE_EXPR) {
           const symbol = op.left.resolvedSymbol!
           visit(op.right)
-          if (symbol?.kind === ast.SymbolKind.VARIABLE) {
-            if (symbol.isGlobal) {
-              emitDupTop(registerType(op.resolvedType!))
-              line(`global.set ${wasmId(symbol.node.name.lexeme)}`)
-            } else {
-              line(`local.tee ${wasmId(symbol.node.name.lexeme, symbol.id)}`)
-            }
-          } else if (symbol.kind === ast.SymbolKind.PARAM) {
-            line(`local.tee ${wasmId(symbol.param.name.lexeme, symbol.id)}`)
+          if (symbol.kind === ast.SymbolKind.VARIABLE || symbol.kind === ast.SymbolKind.PARAM) {
+            emitSetSymbol(symbol)
           } else {
-            throw new Error("Bad symbol for assignment")
+            throw new Error("Cannot assign to function symbol")
           }
         } else {
-          // Assigning to an index expression, e.g. `(...)[i] = ...`
+          // Assigning to an index or dereference expression, e.g. `(...)[i] = ...` or `(...)~ = ...`
           const elementType = op.resolvedType!
 
           if (ast.isScalar(elementType)) {
@@ -331,7 +442,7 @@ export function emit(context: ast.Context): string {
               line(`local.tee ${wasmId(teeRegister)}`) // for chained assignment
               line(`i32.const ${ast.sizeof(elementType)}`)
               line(`call ${wasmId("__memcpy__")}`)
-  
+
               line(`local.get ${wasmId(teeRegister)}`)
             }
           }
@@ -472,7 +583,7 @@ export function emit(context: ast.Context): string {
               line(`global.get ${wasmId("__stack_ptr__")}`)
             }
           } else {
-            throw new Error("Unexpected callee")  
+            throw new Error("Unexpected callee")
           }
         } else {
           throw new Error("Unexpected callee")
@@ -531,7 +642,7 @@ export function emit(context: ast.Context): string {
                 line(`i32.and`)
                 break
               }
-              case ast.TypeCategory.BOOL: 
+              case ast.TypeCategory.BOOL:
               case ast.TypeCategory.INT: {
                 // no conversion needed
                 break
@@ -549,8 +660,8 @@ export function emit(context: ast.Context): string {
           }
           case ast.TypeCategory.FLOAT: {
             switch (op.value.resolvedType?.category) {
-              case ast.TypeCategory.BOOL: 
-              case ast.TypeCategory.BYTE: 
+              case ast.TypeCategory.BOOL:
+              case ast.TypeCategory.BYTE:
               case ast.TypeCategory.INT: {
                 line(`f32.convert_i32_s`)
                 break
@@ -567,6 +678,26 @@ export function emit(context: ast.Context): string {
           }
           default: {
             throw new Error(`Unexpected type ${ast.typeToString(op.type)} for cast target`)
+          }
+        }
+        break
+      }
+      case ast.NodeKind.DEREF_EXPR: {
+        const op = node as ast.DerefExpr
+
+        const elementType = op.resolvedType!
+        visit(op.value, ExprMode.RVALUE) // returns an address pointing to value of type `elementType`
+        if (exprMode === ExprMode.LVALUE) {
+          // Done; return address of value
+        } else {
+          if (ast.isScalar(elementType)) {
+            emitLoadScalar(elementType)
+          } else {
+            // Allows construction of temporaries like:
+            // ```
+            // var mat [[int; 2]; 2] = [row1~, row2~];
+            // ```
+            emitPushMem(elementType)
           }
         }
         break
@@ -707,15 +838,37 @@ export function emit(context: ast.Context): string {
         const op = node as ast.UnaryExpr
         switch (op.operator.lexeme) {
           case "!": {
-            visit(op.right)
+            visit(op.value)
             line(`i32.eqz`)
             break
           }
           case "-": {
-            const t = registerType(op.right.resolvedType!)
+            const t = registerType(op.value.resolvedType!)
             line(`${t}.const 0`)
-            visit(op.right)
+            visit(op.value)
             line(`${t}.sub`)
+            break
+          }
+          case "&": {
+            switch (op.value.kind) {
+              case ast.NodeKind.VARIABLE_EXPR: {
+                const symbol = op.value.resolvedSymbol
+                if (symbol?.kind === ast.SymbolKind.PARAM || symbol?.kind === ast.SymbolKind.VARIABLE) {
+                  emitLoc(symbol)
+                } else {
+                  throw new Error("Unhandled operand for operator '&'.")
+                }
+                break
+              }
+              case ast.NodeKind.INDEX_EXPR: {
+                // `&arr[i]` should return address of the ith element in `arr`.
+                visit(op.value, ExprMode.LVALUE)
+                break
+              }
+              default: {
+                throw new Error("Unhandled operand for operator '&'.")
+              }
+            }
             break
           }
           default: {
@@ -728,14 +881,9 @@ export function emit(context: ast.Context): string {
         const op = node as ast.VariableExpr
         const symbol = op.resolvedSymbol
         if (symbol) {
-          if (symbol.kind === ast.SymbolKind.VARIABLE) {
-            if (symbol.isGlobal) {
-              line(`global.get ${wasmId(op.name.lexeme)}`)
-            } else {
-              line(`local.get ${wasmId(op.name.lexeme, symbol.id)}`)
-            }
-          } else if (symbol.kind === ast.SymbolKind.PARAM) {
-            line(`local.get ${wasmId(op.name.lexeme, symbol.id)}`)
+          if (symbol.kind === ast.SymbolKind.VARIABLE || symbol.kind === ast.SymbolKind.PARAM) {
+            emitGetSymbol(symbol)
+            // TODO: This probably needs to push nonscalars if evaluated as rvalue
           } else {
             // We shouldn't be visiting variable expressions of function type.
             // Function calls emit their own code (see case for CALL_EXPR).
@@ -776,6 +924,7 @@ export function emit(context: ast.Context): string {
       }
       case ast.NodeKind.FUNCTION_STMT: {
         const op = node as ast.FunctionStmt
+        localLocs = new Map()
         if (op.name.lexeme === "main") {
           line(`(func ${wasmId("main")} (export "main")`)
         } else {
@@ -791,8 +940,8 @@ export function emit(context: ast.Context): string {
           if (!ast.isEqual(op.returnType, ast.VoidType)) {
             line(`(result ${registerType(op.returnType)})`)
           }
-          // WASM doesn't have block scope, and `func` definitions require all locals to be 
-          // declared ahead-of-time, so we need to hoist all locals in descendant scopes
+          // WASM doesn't have block scope, and `func` definitions require all local registers
+          // to be declared ahead-of-time, so we need to hoist all locals in descendant scopes
           // to the top, so:
           // ```
           // def foo() {
@@ -801,7 +950,7 @@ export function emit(context: ast.Context): string {
           //   {
           //     var b = 1;
           //     // ...
-          //   } 
+          //   }
           // }
           // ```
           // becomes
@@ -810,28 +959,47 @@ export function emit(context: ast.Context): string {
           //   ;; ...
           // )
           // ```
-          line(`(local ${wasmId("__base_ptr__")} i32)`)
-          line(`(local ${wasmId("__tee_i32__")} i32)`)
-          line(`(local ${wasmId("__tee_f32__")} f32)`)
-          op.scope.forEach((name, local) => {
-            if (local.kind === ast.SymbolKind.VARIABLE) {
-              line(`(local ${wasmId(name, local.id)} ${registerType(local.node.type!)})`)
+          {
+            line(`(local ${wasmId("__base_ptr__")} i32)`)
+            line(`(local ${wasmId("__tee_i32__")} i32)`)
+            line(`(local ${wasmId("__tee_f32__")} f32)`)
+            line(`(local ${wasmId("__swapa_i32__")} i32)`)
+            line(`(local ${wasmId("__swapb_i32__")} i32)`)
+            line(`(local ${wasmId("__swapb_f32__")} f32)`)
+            line(`(local ${wasmId("__swapa_f32__")} f32)`)
+
+            let localOffset = 0
+            const allocateRegisterOrStackLoc = (local: ast.Symbol) => {
+              if (local.kind !== ast.SymbolKind.FUNCTION) {
+                if (isVariableInRegister(local) && local.kind === ast.SymbolKind.VARIABLE) {
+                  line(`(local ${wasmId(local.node.name.lexeme, local.id)} ${registerType(local.node.type!)})`)
+                } else {
+                  const type = local.kind === ast.SymbolKind.VARIABLE ?
+                    local.node.type : local.param.type
+                  localOffset += ast.sizeof(type!)
+                  localLocs?.set(local, localOffset)
+                }
+              }
             }
-          })
-          op.hoistedLocals?.forEach((local) => {
-            const name = local.node.name.lexeme
-            line(`(local ${wasmId(name, local.id)} ${registerType(local.node.type!)})`)
-          })
-          line(`global.get ${wasmId("__stack_ptr__")}`)
-          line(`local.set ${wasmId("__base_ptr__")}`)
-          
-          // Copy + push nonscalar args to stack
+            op.scope.forEach((_, local) => allocateRegisterOrStackLoc(local))
+            op.hoistedLocals?.forEach((local) => allocateRegisterOrStackLoc(local))
+            line(`global.get ${wasmId("__stack_ptr__")}`)
+            line(`local.set ${wasmId("__base_ptr__")}`)
+
+            line(`global.get ${wasmId("__stack_ptr__")}`)
+            line(`i32.const ${localOffset}`)
+            line(`i32.sub`)
+            line(`global.set ${wasmId("__stack_ptr__")}`)
+          }
+
+          // Copy + push nonregister args to stack
           op.params.forEach((param) => {
-            if (!ast.isScalar(param.type)) {
-              const symbol = op.scope.lookup(param.name.lexeme, (_) => true)
+            const symbol = op.scope.lookup(param.name.lexeme, (_) => true) as ast.ParamSymbol
+            if (symbol && !isVariableInRegister(symbol)) {
               line(`local.get ${wasmId(param.name.lexeme, symbol!.id)}`)
-              emitPushMem(param.type)
-              line(`local.set ${wasmId(param.name.lexeme, symbol!.id)}`)
+              emitSetSymbol(symbol)
+              // After this, we should only ever be using `emitGetSymbol` to access the symbol.
+              // The local is meaningless.
             }
           })
 
@@ -844,6 +1012,7 @@ export function emit(context: ast.Context): string {
           dedent()
         }
         line(`)`)
+        localLocs = null
         break
       }
       case ast.NodeKind.IF_STMT: {
@@ -893,13 +1062,8 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         visit(op.initializer)
-        // Non-scalar types like arrays are pushed on the stack when the initializer
-        // is evaluated. The return value put onto the host (WASM) stack is an address.
-        if (op.symbol?.isGlobal) {
-          line(`global.set ${wasmId(op.name.lexeme)}`)
-        } else {
-          line(`local.set ${wasmId(op.name.lexeme, op.symbol!.id)}`)
-        }
+        emitSetSymbol(op.symbol!) // returns address/value that was set
+        line(`drop`)
         break
       }
       case ast.NodeKind.WHILE_STMT: {
@@ -945,24 +1109,43 @@ export function emit(context: ast.Context): string {
     line(`(memory $memory ${INITIAL_PAGES})`)
 
     line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`)
+    let globalByteOffset = DATA_TOP_BYTE_OFFSET
     context.globalInitOrder?.forEach((varDecl) => {
-      if (varDecl.type !== null) {
-        const type = registerType(varDecl.type)
-        line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${type}) ${defaultForRegisterType(type)})`)
+      const symbol = varDecl.symbol
+      if (symbol !== null && varDecl.type !== null) {
+        if (isVariableInRegister(symbol)) {
+          const type = registerType(varDecl.type)
+          line(`(global ${wasmId(varDecl.name.lexeme)} (mut ${type}) ${defaultForRegisterType(type)})`)
+        } else {
+          globalByteOffset -= ast.sizeof(varDecl.type)
+          globalLocs.set(symbol, globalByteOffset)
+        }
       }
     })
-  
+
     line(`(func (export "__init_globals__")`)
     {
       indent()
+      line(`(local ${wasmId("__base_ptr__")} i32)`)
       line(`(local ${wasmId("__tee_i32__")} i32)`)
       line(`(local ${wasmId("__tee_f32__")} f32)`)
+      line(`(local ${wasmId("__swapa_i32__")} i32)`)
+      line(`(local ${wasmId("__swapb_i32__")} i32)`)
+      line(`(local ${wasmId("__swapb_f32__")} f32)`)
+      line(`(local ${wasmId("__swapa_f32__")} f32)`)
+
+      line(`global.get ${wasmId("__stack_ptr__")}`)
+      line(`local.set ${wasmId("__base_ptr__")}`)
+
       context.globalInitOrder?.forEach((varDecl) => {
         if (varDecl.type !== null) {
           visit(varDecl)
           skip.add(varDecl)
         }
       })
+
+      line(`local.get ${wasmId("__base_ptr__")}`)
+      line(`global.set ${wasmId("__stack_ptr__")}`)
       dedent()
     }
     line(`)`)
@@ -1021,11 +1204,11 @@ export function emit(context: ast.Context): string {
       dedent()
     }
     line(`)`)
-  
+
     context.topLevelStatements.forEach((statement) => {
       visit(statement)
     })
-  
+
     dedent()
   }
   line(`)`)

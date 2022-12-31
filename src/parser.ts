@@ -368,30 +368,43 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   function type(): ast.Type {
+    let baseType: ast.Type | null = null
     if (match(TokenType.LEFT_BRACKET)) {
       const elementType = type()
       consume(TokenType.SEMICOLON, "Expect ';' in array type.")
       const length = consume(TokenType.NUMBER, "Expect array length specifier.").literal
       consume(TokenType.RIGHT_BRACKET, "Expect ']' after array type.")
-      return {
+      baseType = {
         category: ast.TypeCategory.ARRAY,
         elementType,
         length
       }
+    } else if (match(TokenType.INT)) {
+      baseType = ast.IntType
+    } else if (match(TokenType.FLOAT)) {
+      baseType = ast.FloatType
+    } else if (match(TokenType.BYTE)) {
+      baseType = ast.ByteType
+    } else if (match(TokenType.BOOL)) {
+      baseType = ast.BoolType
     }
-    if (match(TokenType.INT)) {
-      return ast.IntType
+
+    if (baseType !== null) {
+      let outType: ast.Type = baseType
+      while (match(TokenType.TILDE)) {
+        if (ast.isValidElementType(outType)) {
+          outType = {
+            category: ast.TypeCategory.POINTER,
+            elementType: outType
+          }
+        } else {
+          throw parseError(`Invalid type specifier starting at '${peek().lexeme}'.`)
+        }
+      }
+      return outType
+    } else {
+      throw parseError(`Invalid type specifier starting at '${peek().lexeme}'.`)
     }
-    if (match(TokenType.FLOAT)) {
-      return ast.FloatType
-    }
-    if (match(TokenType.BYTE)) {
-      return ast.ByteType
-    }
-    if (match(TokenType.BOOL)) {
-      return ast.BoolType
-    }
-    throw parseError(`Invalid type specifier starting at '${peek().lexeme}'.`)
   }
 
   function expression(): ast.Expr {
@@ -403,7 +416,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (match(TokenType.EQUAL)) {
       const operator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR) {
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
         return ast.assignExpr({
           operator,
           left: expr,
@@ -504,12 +517,12 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   function exprUnary(): ast.Expr {
-    if (match(TokenType.BANG) || match(TokenType.MINUS)) {
+    if (match(TokenType.BANG) || match(TokenType.MINUS) || match(TokenType.AMP)) {
       const operator = previous()
-      const right = exprUnary()
+      const value = exprUnary()
       return ast.unaryExpr({
         operator,
-        right
+        value
       })
     }
     return exprCall()
@@ -534,17 +547,32 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         paren,
         args
       })
-    } 
-    // can have any number of indexes
-    while (match(TokenType.LEFT_BRACKET)) {
-      const bracket = previous()
-      const index = expression()
-      consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.")
-      expr = ast.indexExpr({
-        callee: expr,
-        bracket,
-        index
-      })
+    }
+    // can have any number of indexes or pointer dereferences
+    while (match(TokenType.LEFT_BRACKET) || match(TokenType.TILDE)) {
+      const operator = previous()
+      switch (operator.lexeme) {
+        case "[": {
+          const index = expression()
+          consume(TokenType.RIGHT_BRACKET, "Expect ']' after index.")
+          expr = ast.indexExpr({
+            callee: expr,
+            bracket: operator,
+            index
+          })
+          break
+        }
+        case "~": {
+          expr = ast.derefExpr({
+            operator,
+            value: expr
+          })
+          break
+        }
+        default: {
+          throw new Error("Unhandled operator in call group")
+        }
+      }
     }
     return expr
   }

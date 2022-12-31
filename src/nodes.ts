@@ -7,6 +7,7 @@ export enum NodeKind {
   BINARY_EXPR,
   CALL_EXPR,
   CAST_EXPR,
+  DEREF_EXPR,
   GROUP_EXPR,
   INDEX_EXPR,
   LEN_EXPR,
@@ -31,17 +32,17 @@ export interface Node {
   kind: NodeKind
 }
 
-export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | GroupExpr | IndexExpr | LenExpr | ListExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
+export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | DerefExpr | GroupExpr | IndexExpr | LenExpr | ListExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
 
 export interface AssignExpr extends Node {
   kind: NodeKind.ASSIGN_EXPR
   operator: Token
-  left: IndexExpr | VariableExpr
+  left: IndexExpr | VariableExpr | DerefExpr
   right: Expr
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function assignExpr({ left, operator, right }: { left: IndexExpr | VariableExpr; operator: Token; right: Expr }): AssignExpr {
+export function assignExpr({ left, operator, right }: { left: IndexExpr | VariableExpr | DerefExpr; operator: Token; right: Expr }): AssignExpr {
   return {
     kind: NodeKind.ASSIGN_EXPR,
     operator,
@@ -100,6 +101,22 @@ export function castExpr({ token, type, value }: { token: Token; type: Type; val
     kind: NodeKind.CAST_EXPR,
     token,
     type,
+    value,
+    resolvedType: null
+  }
+}
+
+export interface DerefExpr extends Node {
+  kind: NodeKind.DEREF_EXPR
+  operator: Token
+  value: Expr
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function derefExpr({ operator, value }: { operator: Token; value: Expr }): DerefExpr {
+  return {
+    kind: NodeKind.DEREF_EXPR,
+    operator,
     value,
     resolvedType: null
   }
@@ -238,15 +255,15 @@ export function logicalExpr({ left, operator, right }: { left: Expr; operator: T
 export interface UnaryExpr extends Node {
   kind: NodeKind.UNARY_EXPR
   operator: Token
-  right: Expr
+  value: Expr
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function unaryExpr({ operator, right }: { operator: Token; right: Expr }): UnaryExpr {
+export function unaryExpr({ operator, value }: { operator: Token; value: Expr }): UnaryExpr {
   return {
     kind: NodeKind.UNARY_EXPR,
     operator,
-    right,
+    value,
     resolvedType: null
   }
 }
@@ -302,7 +319,7 @@ export const BoolType = {
   category: TypeCategory.BOOL as const
 }
 
-export type SimpleType = typeof VoidType | typeof IntType | typeof FloatType | typeof ByteType | typeof BoolType
+export type SimpleType = typeof IntType | typeof FloatType | typeof ByteType | typeof BoolType
 
 export interface ArrayType {
   category: TypeCategory.ARRAY
@@ -330,7 +347,7 @@ export function ptrType(elementType: Type): PointerType {
   }
 }
 
-export type Type = ArrayType | PointerType | SimpleType | typeof ErrorType
+export type Type = ArrayType | PointerType | SimpleType | typeof ErrorType | typeof VoidType
 
 export function isEqual(a: Type, b: Type): boolean {
   if (a.category === TypeCategory.ARRAY && b.category === TypeCategory.ARRAY) {
@@ -342,24 +359,33 @@ export function isEqual(a: Type, b: Type): boolean {
   return a.category === b.category
 }
 
+export function isValidElementType(t: Type): boolean {
+  if (isEqual(t, ErrorType)) {
+    return true
+  }
+  return sizeof(t) > 0
+}
+
 export function sizeof(t: Type): number {
   switch (t.category) {
     case TypeCategory.ARRAY: {
-      return sizeof(t.elementType) * t.length;
+      return sizeof(t.elementType) * t.length
     }
     case TypeCategory.POINTER: {
       return sizeof(t.elementType)
     }
     case TypeCategory.INT: 
     case TypeCategory.FLOAT: {
-      return 4;
+      return 4
     }
     case TypeCategory.BYTE: 
     case TypeCategory.BOOL: {
-      return 1;
+      return 1
     }
-    case TypeCategory.ERROR:
     case TypeCategory.VOID: {
+      return 0
+    }
+    case TypeCategory.ERROR: {
       throw new Error(`Unhandled type ${typeToString(t)} for sizeof`)
     }
   }
@@ -698,6 +724,7 @@ export interface VariableSymbol {
   node: VarStmt
   isGlobal: boolean
   id: number
+  isAddressTaken: boolean
 }
 
 export interface FunctionSymbol {
@@ -710,6 +737,7 @@ export interface ParamSymbol {
   kind: SymbolKind.PARAM
   param: Param
   id: number
+  isAddressTaken: boolean
 }
 
 export class Scope {
@@ -767,7 +795,8 @@ export class Context {
       kind: SymbolKind.VARIABLE,
       node,
       isGlobal,
-      id: this.nextID++
+      id: this.nextID++,
+      isAddressTaken: false
     }
   }
 
@@ -783,7 +812,8 @@ export class Context {
     return {
       kind: SymbolKind.PARAM,
       param,
-      id: this.nextID++
+      id: this.nextID++,
+      isAddressTaken: false
     }
   }
 }
@@ -815,7 +845,7 @@ export function typeToString(type: Type): string {
       return `[${typeToString(type.elementType)}; ${type.length}]`
     }
     case TypeCategory.POINTER: {
-      return `${typeToString(type.elementType)}*`
+      return `${typeToString(type.elementType)}~`
     }
     case TypeCategory.ERROR: {
       return "<error-type>"
@@ -867,6 +897,11 @@ export function astToSExpr(node: Node): string {
       out += "("
       out += `${typeToSExpr(op.type)} ${astToSExpr(op.value)}`
       out += ")"
+      break
+    }
+    case NodeKind.DEREF_EXPR: {
+      const op = node as DerefExpr
+      out += `(deref ${astToSExpr(op.value)})`
       break
     }
     case NodeKind.GROUP_EXPR: {
@@ -923,7 +958,7 @@ export function astToSExpr(node: Node): string {
       const op = node as UnaryExpr
       const operator = op.operator.lexeme
       out += "("
-      out += `${operator} ${astToSExpr(op.right)}`
+      out += `${operator} ${astToSExpr(op.value)}`
       out += ")"
       break
     }

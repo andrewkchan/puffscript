@@ -330,6 +330,32 @@ describe("parser", () => {
       "1: 'a' is already declared in this scope."
     ])
   })
+
+  test("Invalid assignment target", () => {
+    expectParseErrors(`
+    def foo() int {
+      return 1;
+    }
+    def main() {
+      var a = 0;
+      var y = true;
+      var z = [1, 2, 3];
+      var p = &a;
+      2 = a; // error
+      foo() = a; // error
+      &a = p; // error
+      false = y; // error
+      [4, 5, 6] = z; // error
+    }
+    `,
+    [
+      "9: Invalid assignment target.",
+      "10: Invalid assignment target.",
+      "11: Invalid assignment target.",
+      "12: Invalid assignment target.",
+      "13: Invalid assignment target."
+    ])
+  })
 })
 
 describe("type checking", () => {
@@ -899,6 +925,17 @@ describe("type checking", () => {
     ])
   })
 
+  test("assign pointer to non-address", () => {
+    expectResolveErrors(`
+    def main() {
+      var p int~ = 1;
+    }
+    `,
+    [
+      "2: Cannot assign value of type 'int' to variable of type 'int~'.",
+    ])
+  })
+
   test("address-of operator", () => {
     expectResolveErrors(`
     var g = 1;
@@ -928,13 +965,13 @@ describe("type checking", () => {
     }
     `,
     [
-      "3: Invalid operand type for unary operator '&'.",
-      "4: Invalid operand type for unary operator '&'.",
-      "5: Invalid operand type for unary operator '&'.",
-      "6: Invalid operand type for unary operator '&'.",
-      "7: Invalid operand type for unary operator '&'.",
-      "16: Invalid operand type for unary operator '&'.",
-      "20: Invalid operand type for unary operator '&'.",
+      "3: Invalid operand for unary operator '&'.",
+      "4: Invalid operand for unary operator '&'.",
+      "5: Invalid operand for unary operator '&'.",
+      "6: Invalid operand for unary operator '&'.",
+      "7: Invalid operand for unary operator '&'.",
+      "16: Invalid operand for unary operator '&'.",
+      "20: Invalid operand for unary operator '&'.",
     ])
   })
 
@@ -979,6 +1016,133 @@ describe("type checking", () => {
       "23: Invalid operand for dereferencing operator '~'.",
       "27: Cannot assign value of type 'int~' to variable of type 'int'.",
       "29: Invalid operand for dereferencing operator '~'.",
+    ])
+  })
+
+  test("dereferencing lval variables", () => {
+    expectResolveErrors(`
+    def main() {
+      var x = 5;
+      var y = true;
+      var mat = [[1, 2], [3, 4]];
+      var arrp [int~; 2] = [&x, &x];
+
+      var px int~ = &x;
+      var py bool~ = &y;
+      var pmat [[int; 2]; 2]~ = &mat;
+      var prow [int; 2]~ = &mat[0];
+      var pel int~ = &mat[0][0];
+      var arrpel int~ = arrp[0];
+      var pp int~~ = &px;
+
+      x~ = 6; // error
+      px~ = 6; // ok
+      y~ = false; // error
+      py~ = false; // ok
+      mat~ = [[5, 6], [7, 8]]; // error
+      pmat~ = [[5, 6], [7, 8]]; // ok
+      mat[0]~ = [5, 6]; // error
+      prow~ = [5, 6]; // ok
+      mat[0][0]~ = 5; // error
+      pel~ = 5; // ok
+      arrp[0]~ = 6; // ok
+      pp~ = &x; // ok
+      pp~~ = 1337; // ok
+      pp~~ = &px; // error
+      pp~~~ = 1; // error
+    }
+    `,
+    [
+      "15: Invalid operand for dereferencing operator '~'.",
+      "17: Invalid operand for dereferencing operator '~'.",
+      "19: Invalid operand for dereferencing operator '~'.",
+      "21: Invalid operand for dereferencing operator '~'.",
+      "23: Invalid operand for dereferencing operator '~'.",
+      "28: Cannot implicitly convert operand to 'int'.",
+      "29: Invalid operand for dereferencing operator '~'.",
+    ])
+  })
+
+  test("pointer arithmetic", () => {
+    expectResolveErrors(`
+    def printAddr(p int~ ) {
+      print p~;
+    }
+    def main() {
+      var x = [1,2,3];
+      var p = &x[1];
+      printAddr(1 + p); // ok
+      printAddr(p + 1); // ok
+      printAddr(1 - p); // error
+      printAddr(p - 1); // ok
+      printAddr(2 * p); // error
+      printAddr(p * 2); // error
+      printAddr(2 / p); // error
+      printAddr(p / 2); // error
+      var q = &x[0];
+      printAddr(p + q); // error
+      printAddr(p - q); // error
+    }
+    `,
+    [
+      "9: Invalid operand types for binary operator '-'.",
+      "11: Invalid operand types for binary operator '*'.",
+      "12: Invalid operand types for binary operator '*'.",
+      "13: Invalid operand types for binary operator '/'.",
+      "14: Invalid operand types for binary operator '/'.",
+      "16: Invalid operand types for binary operator '+'.",
+      // TODO: might be useful to allow pointer differencing later
+      "17: Invalid operand types for binary operator '-'.",
+    ])
+  })
+
+  test("dereferencing lval expressions", () => {
+    expectResolveErrors(`
+    var g = 1;
+    def globalLoc() int~ {
+      return &g;
+    }
+    def global() int {
+      return g;
+    }
+    def main() {
+      var x = 5;
+      var y = true;
+      var mat = [[1, 2], [3, 4]];
+      var arrp [int~; 2] = [&x, &x];
+
+      1~ = 6; // error
+      (&1)~ = 6; // error
+      (&x)~ = 6; // ok
+      (&x + 1)~ = 6; // ok
+      false~ = false; // error
+      (&false)~ = false; // error
+      (&y)~ = false; // ok
+      [[1, 2], [3, 4]]~ = [[5, 6], [7, 8]]; // error
+      (&[[1, 2], [3, 4]])~ = [[5, 6], [7, 8]]; // error
+      (&mat)~ = [[5, 6], [7, 8]]; // ok
+      (&mat[0] + 1)~ = [5, 6]; // ok
+      (&mat[0][0] + 1)~ = 5; // ok
+      (arrp[0] + 1)~ = 6; // ok
+
+      var px int~ = &x;
+      (px + 1)~ = 1; // ok
+      (&px + 1)~ = &x; // ok
+
+      globalLoc()~ = 2; // ok
+      global()~ = 2; // error
+      (&global())~ = 2; // error
+    }
+    `,
+    [
+      "14: Invalid operand for dereferencing operator '~'.",
+      "15: Invalid operand for unary operator '&'.",
+      "18: Invalid operand for dereferencing operator '~'.",
+      "19: Invalid operand for unary operator '&'.",
+      "21: Invalid operand for dereferencing operator '~'.",
+      "22: Invalid operand for unary operator '&'.",
+      "33: Invalid operand for dereferencing operator '~'.",
+      "34: Invalid operand for unary operator '&'.",
     ])
   })
 })
@@ -1922,6 +2086,30 @@ describe("end to end", () => {
     `
 3333
 2222
+`.trim() + "\n")
+  })
+
+  test("pointers 6: pointer arithmetic", async () => {
+    await expectOutput(`
+    var data = [byte(0); 8];
+    def main() {
+      var pb_start = &data[0];
+      var pb_end = &data[0] + 8;
+      for (var p = pb_start; p != pb_end - 4; p = p + 1) {
+        p~ = 255;
+      }
+      print data; // [255, 255, 255, 255, 0, 0, 0, 0]
+      var pi_start = int~(pb_start);
+      var pi_end = int~(pb_end);
+      for (var p = pi_start; p != pi_end; p = p + 1) {
+        print p~; // -1, 0
+      }
+    }
+    `,
+    `
+[255, 255, 255, 255, 0, 0, 0, 0]
+-1
+0
 `.trim() + "\n")
   })
 })

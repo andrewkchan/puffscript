@@ -676,6 +676,14 @@ export function emit(context: ast.Context): string {
             }
             break
           }
+          case ast.TypeCategory.POINTER: {
+            if (op.value.resolvedType?.category === ast.TypeCategory.POINTER) {
+              // no conversions needed
+            } else {
+              throw new Error(`Unexpected type ${ast.typeToString(op.type)} for cast source`)
+            }
+            break
+          }
           default: {
             throw new Error(`Unexpected type ${ast.typeToString(op.type)} for cast target`)
           }

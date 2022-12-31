@@ -374,11 +374,11 @@ export function sizeof(t: Type): number {
     case TypeCategory.POINTER: {
       return sizeof(t.elementType)
     }
-    case TypeCategory.INT: 
+    case TypeCategory.INT:
     case TypeCategory.FLOAT: {
       return 4
     }
-    case TypeCategory.BYTE: 
+    case TypeCategory.BYTE:
     case TypeCategory.BOOL: {
       return 1
     }
@@ -398,10 +398,10 @@ export function isScalar(t: Type): boolean {
     case TypeCategory.VOID: {
       return false
     }
-    case TypeCategory.BOOL: 
+    case TypeCategory.BOOL:
     case TypeCategory.BYTE:
     case TypeCategory.FLOAT:
-    case TypeCategory.INT: 
+    case TypeCategory.INT:
     case TypeCategory.POINTER: {
       return true
     }
@@ -411,14 +411,14 @@ export function isScalar(t: Type): boolean {
 export function isNumeric(t: Type): boolean {
   switch (t.category) {
     case TypeCategory.ARRAY:
-    case TypeCategory.BOOL: 
+    case TypeCategory.BOOL:
     case TypeCategory.ERROR:
     case TypeCategory.POINTER:
     case TypeCategory.VOID: {
       return false
     }
-    case TypeCategory.INT: 
-    case TypeCategory.FLOAT: 
+    case TypeCategory.INT:
+    case TypeCategory.FLOAT:
     case TypeCategory.BYTE: {
       return true
     }
@@ -432,6 +432,11 @@ export function canCast(from: Type, to: Type): boolean {
     return true
   }
   if ((isNumeric(from) || isEqual(from, BoolType)) && (isNumeric(to) || isEqual(to, BoolType))) {
+    // Numerics and bools can always be casted to and from each other.
+    return true
+  }
+  if (from.category === TypeCategory.POINTER && to.category === TypeCategory.POINTER) {
+    // Pointers are a type escape hatch and can always be casted to/from each other.
     return true
   }
   return isEqual(from, to)
@@ -528,6 +533,26 @@ export function canCoerce(from: Type, to: Type): boolean {
   }
 }
 
+export function canCoerceNumberLiteral(value: number, to: Type): boolean {
+  if (!isNumeric(to)) {
+    return false
+  }
+  switch (to.category) {
+    case TypeCategory.BYTE: {
+      return Number.isInteger(value) && value >= BYTE_MIN && value <= BYTE_MAX
+    }
+    case TypeCategory.INT: {
+      return Number.isInteger(value) && value >= INT_MIN && value <= INT_MAX
+    }
+    case TypeCategory.FLOAT: {
+      return true
+    }
+    default: {
+      return false
+    }
+  }
+}
+
 const NUMERIC_TYPE_PRECEDENCE: readonly SimpleType[] = [ByteType, IntType, FloatType]
 
 // Get lowest common numeric type to which we can coerce both `a` and `b`.
@@ -600,19 +625,19 @@ export interface FunctionStmt extends Node {
   scope: Scope
   symbol: FunctionSymbol | null // filled in by parser
   // After resolve pass, `hoistedLocals` should contain
-  // all local variables declared in descendant scopes 
-  // (e.g. nested blocks) *not* including the function 
+  // all local variables declared in descendant scopes
+  // (e.g. nested blocks) *not* including the function
   // scope itself.
   hoistedLocals: Set<VariableSymbol> | null // filled in by resolver
 }
 
 export function functionStmt(
-  { name, params, returnType, body, scope, symbol }: { 
-    name: Token; 
-    params: Param[]; 
-    returnType: Type; 
-    body: Stmt[]; 
-    scope: Scope; 
+  { name, params, returnType, body, scope, symbol }: {
+    name: Token;
+    params: Param[];
+    returnType: Type;
+    body: Stmt[];
+    scope: Scope;
     symbol: FunctionSymbol | null
 }): FunctionStmt {
   return {

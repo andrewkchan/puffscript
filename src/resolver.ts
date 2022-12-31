@@ -5,7 +5,9 @@ import { TokenType } from './tokens'
 
 class ResolveError extends Error {}
 
-const FAKE_TOKEN = new Token(TokenType.EOF, "fake token for automatically added AST nodes", null, 0, "")
+function fakeToken(type: TokenType, lexeme: string): Token {
+  return new Token(type, lexeme, null, 0, "")
+}
 
 // 1. Resolve AST types and type check all expressions + initializers
 // 2. Determine dependencies of global symbols
@@ -72,9 +74,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
     let out = node
     resolveNode(node, isLiveAtEnd)
     if (!ast.isEqual(node.resolvedType!, type)) {
-      if (ast.canCoerce(node.resolvedType!, type)) {
+      if (ast.canCoerce(node.resolvedType!, type) || (node.kind === ast.NodeKind.LITERAL_EXPR && ast.canCoerceNumberLiteral(node.value, type))) {
         out = ast.castExpr({
-          token: FAKE_TOKEN,
+          token: fakeToken(TokenType.EOF, ""),
           type,
           value: node
         })
@@ -151,14 +153,50 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           case "-":
           case "*":
           case "/": {
-            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+            const leftType = op.left.resolvedType!
+            const rightType = op.right.resolvedType!
+            const lct = ast.getLowestCommonNumeric(leftType, rightType)
             if (lct) {
               op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
               op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+              op.resolvedType = lct
+            } else if (op.operator.lexeme === '+' || op.operator.lexeme === '-') {
+              // Rules for pointer arithmetic:
+              // 1. Only allowed between a pointer and a numeric. Operating on 2 pointers is not allowed.
+              // 2. (numeric + pointer) and (pointer + numeric) are both allowed.
+              // 3. (pointer - numeric) is allowed, (numeric - pointer) is not allowed.
+              if (leftType.category === ast.TypeCategory.POINTER && ast.isNumeric(rightType)) {
+                op.right = ast.binaryExpr({
+                  left: ast.literalExpr({
+                    value: ast.sizeof(leftType.elementType),
+                    type: ast.IntType
+                  }),
+                  right: resolveNodeWithCoercion(op.right, isLiveAtEnd, ast.IntType, op.operator),
+                  operator: fakeToken(TokenType.STAR, "*")
+                })
+                resolveNode(op.right, isLiveAtEnd)
+                op.resolvedType = leftType
+              } else if (rightType.category === ast.TypeCategory.POINTER && ast.isNumeric(leftType) && op.operator.lexeme === '+') {
+                op.left = ast.binaryExpr({
+                  left: ast.literalExpr({
+                    value: ast.sizeof(rightType.elementType),
+                    type: ast.IntType
+                  }),
+                  right: resolveNodeWithCoercion(op.left, isLiveAtEnd, ast.IntType, op.operator),
+                  operator: fakeToken(TokenType.STAR, "*")
+                })
+                resolveNode(op.left, isLiveAtEnd)
+                op.resolvedType = rightType
+              } else {
+                resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
+                op.resolvedType = ast.ErrorType
+              }
             } else {
-              resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
+              if (!ast.isEqual(leftType, ast.ErrorType) && !ast.isEqual(rightType, ast.ErrorType)) {
+                resolveError(op.operator, `Invalid operand types for binary operator '${op.operator.lexeme}'.`)
+              }
+              op.resolvedType = ast.ErrorType
             }
-            op.resolvedType = op.left.resolvedType!
             break
           }
           default: {
@@ -214,7 +252,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         if (op.value.resolvedType?.category === ast.TypeCategory.POINTER) {
           op.resolvedType = op.value.resolvedType.elementType
         } else {
-          resolveError(op.operator, `Invalid operand for dereferencing operator '~'.`)
+          if (op.value.resolvedType?.category !== ast.TypeCategory.ERROR) {
+            resolveError(op.operator, `Invalid operand for dereferencing operator '~'.`)
+          }
           op.resolvedType = ast.ErrorType
         }
         break
@@ -362,10 +402,10 @@ export function resolve(context: ast.Context, reportError: ReportError) {
                   elementType: op.value.resolvedType!
                 }
               }
-            } 
-            
+            }
+
             if (op.resolvedType === null) {
-              resolveError(op.operator, `Invalid operand type for unary operator '&'.`)
+              resolveError(op.operator, `Invalid operand for unary operator '&'.`)
               op.resolvedType = ast.ErrorType
             }
             break
@@ -515,7 +555,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         }
         if (missingReturn) {
           resolveError(
-            op.name, 
+            op.name,
             `All control paths for ${op.name.lexeme} must return a value of type '${ast.typeToString(op.returnType)}'.`
           )
         }
@@ -574,7 +614,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         } else if (!ast.isEqual(op.type, op.initializer.resolvedType!) && !ast.isEqual(op.initializer.resolvedType!, ast.ErrorType)) {
           // TODO: allow implicit conversions when possible
           resolveError(
-            op.name, 
+            op.name,
             `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
           )
         }
@@ -596,7 +636,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         op.isLiveAtEnd = op.body.isLiveAtEnd
         break
       }
-      
+
       default: {
         assertUnreachable(node.kind)
       }

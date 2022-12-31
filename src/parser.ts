@@ -82,7 +82,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   // on catching a parse error, discard tokens until we're at the beginning
-  // of the next statement/declaration so we can continue parsing w/o cascading 
+  // of the next statement/declaration so we can continue parsing w/o cascading
   // errors
   function synchronize() {
     advance()
@@ -123,7 +123,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
   function funDecl(): ast.FunctionStmt {
     const name = consume(TokenType.IDENTIFIER, "Expect identifier after 'def'.")
-    
+
     consume(TokenType.LEFT_PAREN, "Expect '(' after function name.")
     const params: ast.Param[] = []
     while (!check(TokenType.RIGHT_PAREN) && !isAtEnd()) {
@@ -143,7 +143,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (!check(TokenType.LEFT_BRACE)) {
       returnType = type()
     }
-    
+
     consume(TokenType.LEFT_BRACE, "Expect '{' before function body.")
     pushScope()
     params.forEach((param) => {
@@ -158,7 +158,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     })
     const body = block()
     const scope = popScope()
-    
+
     const node = ast.functionStmt({
       name,
       params,
@@ -181,7 +181,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
   function varDecl(): ast.VarStmt {
     const name = consume(TokenType.IDENTIFIER, "Expect identifier after 'var'.")
-    
+
     // null means `infer from initializer`.
     let varType: ast.Type | null = null
     if (!check(TokenType.EQUAL)) {
@@ -329,7 +329,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     let body: ast.Stmt = statement()
     const innerScope = popScope()
     const outerScope = popScope()
-    
+
     const loop = ast.whileStmt({
       expression: condition,
       body: ast.blockStmt({
@@ -645,12 +645,14 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
     if (check(TokenType.INT) || check(TokenType.FLOAT) || check(TokenType.BYTE) || check(TokenType.BOOL)) {
       // cast expression
+      // TODO: allow pointers to arrays
       const castType = type()
       switch (castType.category) {
-        case ast.TypeCategory.INT: 
-        case ast.TypeCategory.FLOAT: 
-        case ast.TypeCategory.BYTE: 
-        case ast.TypeCategory.BOOL: {
+        case ast.TypeCategory.INT:
+        case ast.TypeCategory.FLOAT:
+        case ast.TypeCategory.BYTE:
+        case ast.TypeCategory.BOOL:
+        case ast.TypeCategory.POINTER: {
           break
         }
         default: {
@@ -674,7 +676,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       consume(TokenType.RIGHT_PAREN, "Expect ')' after len expression.")
       return ast.lenExpr({ value })
     }
-    
+
     throw parseError("Expect expression.")
   }
 

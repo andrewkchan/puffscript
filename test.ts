@@ -43,7 +43,6 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes):
   }
 
   const tokens = scanTokens(source, reportError)
-  console.log(tokens.map(t=>t.toString()))
 
   let context: ast.Context | null = null
   if (errors.length == 0 && (passes & Passes.PARSE)) {

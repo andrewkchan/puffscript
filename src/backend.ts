@@ -752,18 +752,25 @@ export function emit(context: ast.Context): string {
         const initializer = op.initializer
         const elementType = (op.resolvedType as ast.ArrayType).elementType
         if (initializer.kind === ast.ListKind.LIST) {
+          emitAllocStackVal(op.resolvedType!)
+          line(`global.get ${wasmId("__stack_ptr__")}`)
           if (ast.isScalar(elementType)) {
-            for (let i = initializer.values.length - 1; i >= 0; i--) {
-              emitAllocStackVal(elementType)
-              // store item to sp
-              line(`global.get ${wasmId("__stack_ptr__")}`)
+            for (let i = 0; i < initializer.values.length; i++) {
+              emitDupTop("i32")
+              line(`i32.const ${i * ast.sizeof(elementType)}`)
+              line(`i32.add`)
               visit(initializer.values[i]) // value to store
               emitStoreScalar(elementType)
             }
           } else {
-            for (let i = initializer.values.length - 1; i >= 0; i--) {
-              visit(initializer.values[i]) // pushes to stack and returns mutated __stack_ptr__
-              line(`drop`)
+            for (let i = 0; i < initializer.values.length; i++) {
+              emitDupTop("i32")
+              line(`i32.const ${i * ast.sizeof(elementType)}`)
+              line(`i32.add`)
+              visit(initializer.values[i]) // address of value to store
+              emitSwapTop("i32", "i32")
+              line(`i32.const ${ast.sizeof(elementType)}`)
+              line(`call ${wasmId("__memcpy__")}`)
             }
           }
         } else {
@@ -782,9 +789,10 @@ export function emit(context: ast.Context): string {
             for (let i = 1; i < initializer.length; i++) {
               emitPushMem(elementType) // returns mutated __stack_ptr__
             }
+            line(`drop`)
           }
+          line(`global.get ${wasmId("__stack_ptr__")}`)
         }
-        line(`global.get ${wasmId("__stack_ptr__")}`)
         break
       }
       case ast.NodeKind.LITERAL_EXPR: {
@@ -891,7 +899,10 @@ export function emit(context: ast.Context): string {
         if (symbol) {
           if (symbol.kind === ast.SymbolKind.VARIABLE || symbol.kind === ast.SymbolKind.PARAM) {
             emitGetSymbol(symbol)
-            // TODO: This probably needs to push nonscalars if evaluated as rvalue
+            if (!ast.isScalar(op.resolvedType!) && exprMode === ExprMode.RVALUE) {
+              // When evaluating non-scalar variables as rvals, copy the value as a temporary to the stack
+              emitPushMem(op.resolvedType!)
+            }
           } else {
             // We shouldn't be visiting variable expressions of function type.
             // Function calls emit their own code (see case for CALL_EXPR).

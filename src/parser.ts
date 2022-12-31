@@ -596,6 +596,12 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         type: ast.FloatType
       })
     }
+    if (match(TokenType.NUMBER_HEX)) {
+      return ast.literalExpr({
+        value: previous().literal,
+        type: ast.IntType
+      })
+    }
     if (match(TokenType.STRING)) {
       // TODO fixme
       throw parseError("Strings not yet supported")

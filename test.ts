@@ -43,12 +43,7 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes):
   }
 
   const tokens = scanTokens(source, reportError)
-
-  for (const token of tokens) {
-    if (token.type == TokenType.IDENTIFIER && token.lexeme === "int") {
-      console.log(token.lineStr())
-    }
-  }
+  console.log(tokens.map(t=>t.toString()))
 
   let context: ast.Context | null = null
   if (errors.length == 0 && (passes & Passes.PARSE)) {
@@ -354,6 +349,16 @@ describe("parser", () => {
       "11: Invalid assignment target.",
       "12: Invalid assignment target.",
       "13: Invalid assignment target."
+    ])
+  })
+
+  test("Hex literals", () => {
+    expectParseErrors(`
+    var x = 0xAABBCCDD; // ok
+    var y = 0xAAABBCCDD; // error
+    `,
+    [
+      "2: Hex literal does not fit in any numeric type.",
     ])
   })
 })
@@ -1156,11 +1161,13 @@ describe("end to end", () => {
       var i = 256 + 42;
       var f = 3.1415927410125732;
       var arr = [1,2,3];
+      var ih = 0xAABBCCDD;
       print bt;
       print bl;
       print i;
       print f;
       print arr;
+      print ih;
     }
     `,
     `
@@ -1169,6 +1176,7 @@ describe("end to end", () => {
 298
 3.1415927410125732
 [1, 2, 3]
+-1430532899
 `.trim() + "\n")
   })
 

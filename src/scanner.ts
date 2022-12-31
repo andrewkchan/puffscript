@@ -1,13 +1,23 @@
 import { TokenType, TokenPattern } from './tokens'
 import { ReportError } from './util'
 
+export function fakeToken(type: TokenType, lexeme: string): Token {
+  return new Token(type, lexeme, null, 0, "")
+}
+
+const i32 = new Uint32Array(1)
+function parseInt32(str: string): number {
+  i32[0] = parseInt(str)
+  return i32[0]
+}
+
 export class Token {
   readonly type: TokenType
   readonly lexeme: string
   readonly literal: any
   readonly offset: number
   readonly source: string
-  
+
   constructor(type: TokenType, lexeme: string, literal: any, offset: number, source: string) {
     this.type = type
     this.lexeme = lexeme
@@ -98,8 +108,16 @@ export function scanTokens(source: string, reportError: ReportError): Array<Toke
           const val = parseFloat(lexeme)
           tokens.push(new Token(t, lexeme, val, current, source))
         } else if (t === TokenType.NUMBER) {
+          // TODO: Warn about too large numbers?
           const val = parseInt(lexeme)
           tokens.push(new Token(t, lexeme, val, current, source))
+        } else if (t === TokenType.NUMBER_HEX) {
+          const val = parseInt32(lexeme)
+          const token = new Token(t, lexeme, val, current, source)
+          tokens.push(token)
+          if (lexeme.length > 2 + 8) {
+            reportError(token.line(), `Hex literal does not fit in any numeric type.`)
+          }
         } else if (t !== TokenType.COMMENT) {
           // comments are skipped and not added as tokens
           tokens.push(new Token(t, lexeme, null, current, source))

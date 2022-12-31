@@ -5,7 +5,9 @@ export enum TokenType {
   // Literals.
   IDENTIFIER,
   STRING,
+  SINGLE_QUOTE_STRING,
   NUMBER_DECIMAL,
+  NUMBER_HEX,
   NUMBER,
   COMMENT,
 
@@ -62,10 +64,12 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   // Literals.
   [TokenType.IDENTIFIER]: /[a-zA-Z_][a-zA-Z0-9_]*/y,
   [TokenType.STRING]: /"[^"]*"/y,
+  [TokenType.SINGLE_QUOTE_STRING]: /'[^']*'/y,
   [TokenType.NUMBER_DECIMAL]: /\d+\.\d*/y,
+  [TokenType.NUMBER_HEX]: /0x[a-fA-F0-9]+/y,
   [TokenType.NUMBER]: /\d+/y,
   [TokenType.COMMENT]: /\/\/.*/y,
-  
+
   // Single-character tokens.
   [TokenType.LEFT_PAREN]: /\(/y,
   [TokenType.RIGHT_PAREN]: /\)/y,

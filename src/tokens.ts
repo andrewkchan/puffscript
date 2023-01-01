@@ -19,12 +19,7 @@ export enum TokenType {
   LEFT_BRACKET,
   RIGHT_BRACKET,
   COMMA,
-  MINUS,
-  PLUS,
   SEMICOLON,
-  SLASH,
-  STAR,
-  PERCENT,
   TILDE,
 
   // One or two character tokens.
@@ -39,6 +34,16 @@ export enum TokenType {
   AMP_AMP,
   AMP,
   BAR_BAR,
+  MINUS_EQUAL,
+  MINUS,
+  PLUS_EQUAL,
+  PLUS,
+  SLASH_EQUAL,
+  SLASH,
+  STAR_EQUAL,
+  STAR,
+  PERCENT_EQUAL,
+  PERCENT,
 
   // Keywords.
   BYTE,
@@ -78,12 +83,7 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.LEFT_BRACKET]: /\[/y,
   [TokenType.RIGHT_BRACKET]: /\]/y,
   [TokenType.COMMA]: /,/y,
-  [TokenType.MINUS]: /-/y,
-  [TokenType.PLUS]: /\+/y,
   [TokenType.SEMICOLON]: /;/y,
-  [TokenType.SLASH]: /\//y,
-  [TokenType.STAR]: /\*/y,
-  [TokenType.PERCENT]: /%/y,
   [TokenType.TILDE]: /~/y,
 
   // One or two character tokens.
@@ -98,6 +98,16 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.AMP_AMP]: /&&/y,
   [TokenType.AMP]: /&/y,
   [TokenType.BAR_BAR]: /\|\|/y,
+  [TokenType.MINUS_EQUAL]: /-=/y,
+  [TokenType.MINUS]: /-/y,
+  [TokenType.PLUS_EQUAL]: /\+=/y,
+  [TokenType.PLUS]: /\+/y,
+  [TokenType.SLASH_EQUAL]: /\/=/y,
+  [TokenType.SLASH]: /\//y,
+  [TokenType.STAR_EQUAL]: /\*=/y,
+  [TokenType.STAR]: /\*/y,
+  [TokenType.PERCENT_EQUAL]: /%=/y,
+  [TokenType.PERCENT]: /%/y,
 
   // Keywords.
   [TokenType.BYTE]: /byte/y,

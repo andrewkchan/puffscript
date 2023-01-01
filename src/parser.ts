@@ -1,6 +1,6 @@
 import { ReportError, UTF8Codec } from './util'
 import { TokenType } from './tokens'
-import { Token } from './scanner'
+import { Token, fakeToken } from './scanner'
 import * as ast from './nodes'
 
 class ParseError extends Error {}
@@ -429,6 +429,81 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       // Report error; it's still valuable to continue parsing
       // the rest of whatever statement we're in to indicate
       // remaining syntax errors to the user.
+      parseError("Invalid assignment target.")
+    } else if (match(TokenType.PLUS_EQUAL)) {
+      const combinedOperator = previous()
+      const right = exprAssignment()
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+        return ast.assignExpr({
+          operator: combinedOperator,
+          left: expr,
+          right: ast.binaryExpr({
+            left: expr,
+            operator: fakeToken(TokenType.PLUS, "+", combinedOperator),
+            right
+          })
+        })
+      }
+      parseError("Invalid assignment target.")
+    } else if (match(TokenType.MINUS_EQUAL)) {
+      const combinedOperator = previous()
+      const right = exprAssignment()
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+        return ast.assignExpr({
+          operator: combinedOperator,
+          left: expr,
+          right: ast.binaryExpr({
+            left: expr,
+            operator: fakeToken(TokenType.MINUS, "-", combinedOperator),
+            right
+          })
+        })
+      }
+      parseError("Invalid assignment target.")
+    } else if (match(TokenType.STAR_EQUAL)) {
+      const combinedOperator = previous()
+      const right = exprAssignment()
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+        return ast.assignExpr({
+          operator: combinedOperator,
+          left: expr,
+          right: ast.binaryExpr({
+            left: expr,
+            operator: fakeToken(TokenType.STAR, "*", combinedOperator),
+            right
+          })
+        })
+      }
+      parseError("Invalid assignment target.")
+    } else if (match(TokenType.SLASH_EQUAL)) {
+      const combinedOperator = previous()
+      const right = exprAssignment()
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+        return ast.assignExpr({
+          operator: combinedOperator,
+          left: expr,
+          right: ast.binaryExpr({
+            left: expr,
+            operator: fakeToken(TokenType.SLASH, "/", combinedOperator),
+            right
+          })
+        })
+      }
+      parseError("Invalid assignment target.")
+    } else if (match(TokenType.PERCENT_EQUAL)) {
+      const combinedOperator = previous()
+      const right = exprAssignment()
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+        return ast.assignExpr({
+          operator: combinedOperator,
+          left: expr,
+          right: ast.binaryExpr({
+            left: expr,
+            operator: fakeToken(TokenType.PERCENT, "%", combinedOperator),
+            right
+          })
+        })
+      }
       parseError("Invalid assignment target.")
     }
     return expr

@@ -1,8 +1,12 @@
 import { TokenType, TokenPattern } from './tokens'
 import { ReportError } from './util'
 
-export function fakeToken(type: TokenType, lexeme: string): Token {
-  return new Token(type, lexeme, null, 0, "")
+export function fakeToken(type: TokenType, lexeme: string, tokenProvidingLocation: Token | null = null): Token {
+  return new Token(
+    type, lexeme, null,
+    tokenProvidingLocation ? tokenProvidingLocation.offset : 0,
+    tokenProvidingLocation ? tokenProvidingLocation.source : ""
+  )
 }
 
 const i32 = new Uint32Array(1)
@@ -15,6 +19,9 @@ export class Token {
   readonly type: TokenType
   readonly lexeme: string
   readonly literal: any
+  // NOTE: `lexeme` need not equal `source[offset..lexeme.length]`.
+  // Token lexemes may be used to determine operator function, while
+  // `source` and `offset` should only be used for error reporting.
   readonly offset: number
   readonly source: string
 
@@ -86,7 +93,7 @@ export function scanTokens(source: string, reportError: ReportError): Array<Toke
     }
     // 2. check if current lexeme matches a valid token (not including keywords)
     token:
-    for (let t = TokenType.IDENTIFIER; t <= TokenType.BAR_BAR; t++) {
+    for (let t = TokenType.IDENTIFIER; t < TokenType.BYTE; t++) {
       const m = match(source, current, TokenPattern[t])
       if (m !== null) {
         const lexeme = m[0]

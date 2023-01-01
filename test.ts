@@ -351,6 +351,25 @@ describe("parser", () => {
     ])
   })
 
+  test("Invalid variable declaration", () => {
+    expectParseErrors(`
+    def main() {
+      var a += 0;
+      var 0 = 0;
+      var a int;
+      var a notatype = 0;
+      var a int = 0; // ok
+      var b = 0; // ok
+    }
+    `,
+    [
+      "2: Invalid type specifier starting at '+='.",
+      "3: Expect identifier after 'var'.",
+      "4: Expect '=' after variable declaration.",
+      "5: Invalid type specifier starting at 'notatype'.",
+    ])
+  })
+
   test("Hex literals", () => {
     expectParseErrors(`
     var x = 0xAABBCCDD; // ok
@@ -404,6 +423,90 @@ describe("type checking", () => {
       "5: Invalid operand types for binary operator '/'.",
       "6: Invalid operand types for binary operator '>'.",
       "17: Invalid operand types for binary operator '%'."
+    ])
+  })
+
+  test("Operators 2", () => {
+    expectResolveErrors(`
+    def main() {
+      var i = 1;
+      var f = 1.5;
+      var bt = 'c';
+      i += 1; // ok
+      i += 1.5; // error
+      i += true; // error
+      i -= 1; // ok
+      i -= 1.5; // error
+      i -= true; // error
+      i *= 1; // ok
+      i *= 1.5; // error
+      i *= true; // error
+      i /= 1; // ok
+      i /= 1.5; // error
+      i /= true; // error
+      i %= 1; // ok
+      i %= 1.5; // error
+      i %= true; // error
+      f += 1; // ok
+      f += 1.5; // ok
+      f += true; // error
+      f -= 1; // ok
+      f -= 1.5; // ok
+      f -= true; // error
+      f *= 1; // ok
+      f *= 1.5; // ok
+      f *= true; // error
+      f /= 1; // ok
+      f /= 1.5; // ok
+      f /= true; // error
+      f %= 1; // error
+      f %= 1.5; // error
+      f %= true; // error
+      bt += byte(1); // ok
+      bt += 1.5; // error
+      bt += true; // error
+      bt -= byte(1); // ok
+      bt -= 1.5; // error
+      bt -= true; // error
+      bt *= byte(1); // ok
+      bt *= 1.5; // error
+      bt *= true; // error
+      bt /= byte(1); // ok
+      bt /= 1.5; // error
+      bt /= true; // error
+      bt %= byte(1); // ok
+      bt %= 1.5; // error
+      bt %= true; // error
+    }
+    `,
+    [
+      "6: Cannot implicitly convert operand to 'int'.",
+      "7: Invalid operand types for binary operator '+'.",
+      "9: Cannot implicitly convert operand to 'int'.",
+      "10: Invalid operand types for binary operator '-'.",
+      "12: Cannot implicitly convert operand to 'int'.",
+      "13: Invalid operand types for binary operator '*'.",
+      "15: Cannot implicitly convert operand to 'int'.",
+      "16: Invalid operand types for binary operator '/'.",
+      "18: Invalid operand types for binary operator '%'.",
+      "19: Invalid operand types for binary operator '%'.",
+      "22: Invalid operand types for binary operator '+'.",
+      "25: Invalid operand types for binary operator '-'.",
+      "28: Invalid operand types for binary operator '*'.",
+      "31: Invalid operand types for binary operator '/'.",
+      "32: Invalid operand types for binary operator '%'.",
+      "33: Invalid operand types for binary operator '%'.",
+      "34: Invalid operand types for binary operator '%'.",
+      "36: Cannot implicitly convert operand to 'byte'.",
+      "37: Invalid operand types for binary operator '+'.",
+      "39: Cannot implicitly convert operand to 'byte'.",
+      "40: Invalid operand types for binary operator '-'.",
+      "42: Cannot implicitly convert operand to 'byte'.",
+      "43: Invalid operand types for binary operator '*'.",
+      "45: Cannot implicitly convert operand to 'byte'.",
+      "46: Invalid operand types for binary operator '/'.",
+      "48: Invalid operand types for binary operator '%'.",
+      "49: Invalid operand types for binary operator '%'.",
     ])
   })
 
@@ -1557,13 +1660,13 @@ describe("end to end", () => {
       var result = 1;
       while (n > 0) {
         result = result * n;
-        n = n - 1;
+        n -= 1;
       }
       return result;
     }
     def pow(x float, n int) float {
       var result = 1.0;
-      for (var i = 0; i < n; i = i + 1) {
+      for (var i = 0; i < n; i += 1) {
         result = result * x;
       }
       return result;
@@ -1586,12 +1689,12 @@ describe("end to end", () => {
     def main() {
       {
         var i = 1337;
-        for (var i = 0; i < 3; i = i + 1) {
+        for (var i = 0; i < 3; i += 1) {
           print i;
         }
         print i;
       }
-      for (var i = 0; i < 8; i = i + 2) {
+      for (var i = 0; i < 8; i += 2) {
         print i;
       }
     }
@@ -1819,11 +1922,9 @@ describe("end to end", () => {
       var x = [1.0, 0.0];
       print mul(I, x);
       var R = rot90CCW();
-      var i = 0;
-      while (i < 4) {
+      for (var i = 0; i < 4; i += 1) {
         x = mul(R, x);
         print x;
-        i = i + 1;
       }
     }
     `,
@@ -2148,6 +2249,56 @@ describe("end to end", () => {
 [255, 255, 255, 255, 0, 0, 0, 0]
 -1
 0
+`.trim() + "\n")
+  })
+
+  test("Operator-assignment", async () => {
+    await expectOutput(`
+    def main() {
+      var i = 1;
+      var f = 1.5;
+      var arr = [1,2,3,4,5];
+      i += 1;
+      print i; // 2
+      i -= 1;
+      print i; // 1
+      i *= 2;
+      print i; // 2
+      i /= 2;
+      print i; // 1
+      i %= 1;
+      print i; // 0
+      f += 1;
+      print f; // 2.5
+      f -= 1;
+      print f; // 1.5
+      f *= 2;
+      print f; // 3
+      f /= 2;
+      print f; // 1.5
+      arr[0] += 1;
+      arr[1] -= 1;
+      arr[2] *= 2;
+      arr[3] /= 2;
+      arr[4] %= 2;
+      print arr; // [2, 1, 6, 2, 1]
+      var p = &i;
+      p~ += 500;
+      print i; // 500
+    }
+    `,
+    `
+2
+1
+2
+1
+0
+2.5
+1.5
+3
+1.5
+[2, 1, 6, 2, 1]
+500
 `.trim() + "\n")
   })
 })

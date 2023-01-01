@@ -160,8 +160,8 @@ In precedence order (lower first):
 
 | Operator                                                 | Description                                   | Associativity |
 | -------------------------------------------------------- | --------------------------------------------- | ------------- |
-| `=`                                                      | Assignment                                    | right to left |
-| `\|\|`                                                     | Logical or                                    | left to right |
+| `=`, `+=`, `-=`, `*=`, `/=`, `%=`                        | Assignment                                    | right to left |
+| `\|\|`                                                   | Logical or                                    | left to right |
 | `&&`                                                     | Logical and                                   | left to right |
 | `==`, `!=`                                               | Equals, not equals                            | left to right |
 | `>`, `>=`, `<`, `<=`                                     | Comparisons                                   | left to right |
@@ -174,5 +174,4 @@ TODOs:
 
 - Bitwise operations (`&`, `|`, `^`, `~`, `>>`, `<<`)
 - Increment, decrement (`++`, `--`)
-- Operation-assignment (`+=`, `-=`, `*=`, `/=`, `%=`)
 

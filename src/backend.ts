@@ -716,6 +716,7 @@ export function emit(context: ast.Context): string {
         break
       }
       case ast.NodeKind.INDEX_EXPR: {
+        // TODO: trap on out-of-bounds access
         const op = node as ast.IndexExpr
         op.bracket.lineStr(true).split("\n").forEach((l) => {
           debugLine(`;; ${l}`)

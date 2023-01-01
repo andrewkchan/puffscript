@@ -1277,6 +1277,7 @@ describe("end to end", () => {
       var arr = [1,2,3];
       var ih = 0xAABBCCDD;
       var bt_ascii = 'a';
+      var str = "hello world";
       print bt;
       print bl;
       print i;
@@ -1284,6 +1285,7 @@ describe("end to end", () => {
       print arr;
       print ih;
       print bt_ascii;
+      print str;
     }
     `,
     `
@@ -1294,6 +1296,7 @@ describe("end to end", () => {
 [1, 2, 3]
 -1430532899
 97
+hello world
 `.trim() + "\n")
   })
 

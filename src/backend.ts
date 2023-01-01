@@ -40,6 +40,12 @@ enum ExprMode {
   RVALUE
 }
 
+// WAT strings cannot contain backslashes, ASCII control sequences, or quotes:
+// https://webassembly.github.io/spec/core/text/values.html#strings
+function escapeString(str: string): string {
+  return str.replace(/'/, '\'').replace(/\\/, '\\\\').replace(/"/, '\"')
+}
+
 // Returns the WASM type used to represent values of the given type in the WASM (host) stack.
 // This may be different than the WASM type representing the value in the Puff (in-memory) stack.
 // E.g. integer arrays are represented by sequences of i32 in the in-memory stack but only
@@ -90,6 +96,8 @@ const DEBUG_COMMENTS = true
 export function emit(context: ast.Context): string {
   // stores locations of globals.
   const globalLocs: Map<ast.Symbol, number> = new Map()
+  // stores locations of string literals (these live in same segment as globals)
+  const stringLocs: Map<string, number> = new Map()
   // stores distance of locals from function base pointer.
   // distances are positive and must be added to base pointer to get runtime location.
   let localLocs: Map<ast.Symbol, number> | null = null
@@ -331,25 +339,40 @@ export function emit(context: ast.Context): string {
       case ast.TypeCategory.ARRAY: {
         // TODO: When we implement strings, desugar me?
         const elementType = type.elementType
-        emitPrintASCIIChars(`[`)
-        for (let i = 0; i < type.length; i++) {
-          const isLast = i === type.length - 1
-          if (!isLast) {
-            emitDupTop("i32")
-          }
-          line(`i32.const ${i * ast.sizeof(elementType)}`)
-          line(`i32.add`)
-          if (ast.isScalar(elementType)) {
+        if (ast.isEqual(elementType, ast.ByteType)) {
+          // Byte arrays are printed as string literals
+          // TODO: support UTF-8
+          for (let i = 0; i < type.length; i++) {
+            const isLast = i === type.length - 1
+            if (!isLast) {
+              emitDupTop("i32")
+            }
+            line(`i32.const ${i * ast.sizeof(elementType)}`)
+            line(`i32.add`)
             emitLoadScalar(elementType)
-            emitPrintVal(elementType)
-          } else {
-            emitPrintVal(elementType)
+            line(`call ${wasmId("__putc__")}`)
           }
-          if (!isLast) {
-            emitPrintASCIIChars(`, `)
+        } else {
+          emitPrintASCIIChars(`[`)
+          for (let i = 0; i < type.length; i++) {
+            const isLast = i === type.length - 1
+            if (!isLast) {
+              emitDupTop("i32")
+            }
+            line(`i32.const ${i * ast.sizeof(elementType)}`)
+            line(`i32.add`)
+            if (ast.isScalar(elementType)) {
+              emitLoadScalar(elementType)
+              emitPrintVal(elementType)
+            } else {
+              emitPrintVal(elementType)
+            }
+            if (!isLast) {
+              emitPrintASCIIChars(`, `)
+            }
           }
+          emitPrintASCIIChars(`]`)
         }
-        emitPrintASCIIChars(`]`)
         break
       }
       case ast.TypeCategory.BYTE: {
@@ -799,6 +822,18 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.LITERAL_EXPR: {
         const op = node as ast.LiteralExpr
         switch (op.type.category) {
+          case ast.TypeCategory.ARRAY: {
+            const elementType = op.type.elementType
+            if (!ast.isEqual(elementType, ast.ByteType)) {
+              // If we're here, we probably meant to use a LIST_EXPR
+              throw new Error("Literal node contains non-string array")
+            }
+            // TODO: Maybe string vars should be references only?
+            const loc = stringLocs.get(op.value)!
+            line(`i32.const ${loc}`)
+            emitPushMem(op.type)
+            break
+          }
           case ast.TypeCategory.BOOL: {
             line(`i32.const ${op.value === true ? "1" : "0"}`)
             break
@@ -1130,6 +1165,11 @@ export function emit(context: ast.Context): string {
 
     line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`)
     let globalByteOffset = DATA_TOP_BYTE_OFFSET
+    context.stringLiterals.forEach((literal) => {
+      globalByteOffset -= ast.sizeof(literal.type)
+      stringLocs.set(literal.value, globalByteOffset)
+      line(`(data (i32.const ${globalByteOffset}) "${escapeString(literal.value)}")`)
+    })
     context.globalInitOrder?.forEach((varDecl) => {
       const symbol = varDecl.symbol
       if (symbol !== null && varDecl.type !== null) {

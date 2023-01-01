@@ -804,6 +804,7 @@ export class Scope {
 
 export class Context {
   global: Scope
+  stringLiterals: Map<string, LiteralExpr>
   topLevelStatements: TopStmt[]
   globalInitOrder: VarStmt[] | null // filled in by resolver
 
@@ -811,6 +812,7 @@ export class Context {
 
   constructor(global: Scope, topLevelStatements: TopStmt[]) {
     this.global = global
+    this.stringLiterals = new Map()
     this.topLevelStatements = topLevelStatements
     this.globalInitOrder = null
   }

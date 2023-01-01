@@ -680,8 +680,16 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       })
     }
     if (match(TokenType.STRING)) {
-      // TODO fixme
-      throw parseError("Strings not yet supported")
+      const s = previous().literal
+      if (!context.stringLiterals.has(s)) {
+        const bytes = codec.encodeString(s)
+        const literal = ast.literalExpr({
+          value: s,
+          type: ast.arrayType(ast.ByteType, bytes.byteLength)
+        })
+        context.stringLiterals.set(s, literal)
+      }
+      return context.stringLiterals.get(s)!
     }
     if (match(TokenType.SINGLE_QUOTE_STRING)) {
       const c = previous().literal

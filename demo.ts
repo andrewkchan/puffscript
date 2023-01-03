@@ -6,6 +6,7 @@ declare const WabtModule: () => Promise<WABT>
 declare const CodeMirror: (cb: (el: HTMLElement) => void, options: any) => CodeMirrorEl
 
 interface CodeMirrorEl {
+  setValue: (s: string) => void
   getValue: () => string
   on: (eventName: string, cb: () => void) => void
 }
@@ -71,6 +72,51 @@ function debounce(cb: (args: IArguments) => void, wait: number) {
 
 const DEBOUNCE_MS = 500
 
+const EXAMPLES = [
+  {
+    name: "Hello world",
+    contents: `
+def main() {
+  print "Hello world!";
+}
+    `.trim()
+  },
+  {
+    name: "Fibonacci",
+    contents: `
+def fib(n int) int {
+  if (n <= 1) {
+    return 1;
+  }
+  return fib(n-1) + fib(n-2);
+}
+def main() {
+  for (var i=0; i<6; i+=1) {
+    print fib(i);
+  }
+}
+    `.trim()
+  },
+  {
+    name: "Factorial",
+    contents: `
+def factorial(n int) int {
+  var result = 1;
+  for (; n>=1; n-=1) {
+    result *= n;
+  }
+  return result;
+}
+def main() {
+  for (var i=0; i<6; i+=1) {
+    print factorial(i);
+  }
+}
+    `.trim()
+  }
+]
+
+
 WabtModule().then((wabt) => {
   let pendingBuildAndRun: Promise<void> = Promise.resolve()
   let ioBuffer = ""
@@ -127,6 +173,24 @@ WabtModule().then((wabt) => {
       }
     }
   }
+
+  function selectExample(i: number) {
+    const example = EXAMPLES[i]
+    puffEditor.setValue(example.contents)
+    pendingBuildAndRun = pendingBuildAndRun.then(() => buildAndRun())
+  }
+
+  const exampleDropdown = document.getElementById("select")! as HTMLSelectElement
+  for (let example of EXAMPLES) {
+    const option = document.createElement("option")
+    option.textContent = example.name
+    exampleDropdown.appendChild(option)
+  }
+  exampleDropdown.selectedIndex = 0
+  exampleDropdown.addEventListener("change", () => {
+    selectExample(exampleDropdown.selectedIndex)
+  })
+  selectExample(exampleDropdown.selectedIndex)
 
   const onEdit = debounce(() => {
     pendingBuildAndRun = pendingBuildAndRun.then(() => buildAndRun())

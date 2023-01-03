@@ -727,9 +727,10 @@ ${ptr}` : snippet;
       isLiveAtEnd: null
     };
   }
-  function printStmt({ expression }) {
+  function printStmt({ expression, keyword }) {
     return {
       kind: 17 /* PRINT_STMT */,
+      keyword,
       expression,
       isLiveAtEnd: null
     };
@@ -1271,9 +1272,11 @@ ${ptr}` : snippet;
       });
     }
     function printStmt2() {
+      const keyword = previous();
       const expr = expression();
       consume(14 /* SEMICOLON */, "expect ';' after print statement.");
       return printStmt({
+        keyword,
         expression: expr
       });
     }
@@ -2289,6 +2292,9 @@ ${cyclicVar.name.lineStr()}`);
         case 17 /* PRINT_STMT */: {
           const op = node;
           resolveNode(op.expression, isLiveAtEnd);
+          if (isEqual(op.expression.resolvedType, VoidType)) {
+            resolveError(op.keyword, `Cannot print value of type 'void'.`);
+          }
           op.isLiveAtEnd = isLiveAtEnd;
           break;
         }
@@ -3481,6 +3487,49 @@ ${cyclicVar.name.lineStr()}`);
     return wrapped;
   }
   var DEBOUNCE_MS = 500;
+  var EXAMPLES = [
+    {
+      name: "Hello world",
+      contents: `
+def main() {
+  print "Hello world!";
+}
+    `.trim()
+    },
+    {
+      name: "Fibonacci",
+      contents: `
+def fib(n int) int {
+  if (n <= 1) {
+    return 1;
+  }
+  return fib(n-1) + fib(n-2);
+}
+def main() {
+  for (var i=0; i<6; i+=1) {
+    print fib(i);
+  }
+}
+    `.trim()
+    },
+    {
+      name: "Factorial",
+      contents: `
+def factorial(n int) int {
+  var result = 1;
+  for (; n>=1; n-=1) {
+    result *= n;
+  }
+  return result;
+}
+def main() {
+  for (var i=0; i<6; i+=1) {
+    print factorial(i);
+  }
+}
+    `.trim()
+    }
+  ];
   WabtModule().then((wabt) => {
     let pendingBuildAndRun = Promise.resolve();
     let ioBuffer = "";
@@ -3537,6 +3586,22 @@ ${cyclicVar.name.lineStr()}`);
         }
       });
     }
+    function selectExample(i) {
+      const example = EXAMPLES[i];
+      puffEditor.setValue(example.contents);
+      pendingBuildAndRun = pendingBuildAndRun.then(() => buildAndRun());
+    }
+    const exampleDropdown = document.getElementById("select");
+    for (let example of EXAMPLES) {
+      const option = document.createElement("option");
+      option.textContent = example.name;
+      exampleDropdown.appendChild(option);
+    }
+    exampleDropdown.selectedIndex = 0;
+    exampleDropdown.addEventListener("change", () => {
+      selectExample(exampleDropdown.selectedIndex);
+    });
+    selectExample(exampleDropdown.selectedIndex);
     const onEdit = debounce(() => {
       pendingBuildAndRun = pendingBuildAndRun.then(() => buildAndRun());
     }, DEBOUNCE_MS);

@@ -1,4 +1,8 @@
 *.js
+# JS files for browser demo
+!external/**/*.js
+!demo.js
+
 index.d.ts
 index.d.ts.map
 

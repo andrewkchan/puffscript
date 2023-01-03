@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
+  <title>Puffscript demo</title>
+  <link href="./external/codemirror/codemirror.css" rel="stylesheet">
+  <link href="./demo.css" rel="stylesheet">
+</head>
+<body>
+  <header>
+    <h1>Puffscript demo</h1>
+    <p>
+      Write Puffscript code in the textarea on the left. The right side will
+      either display compile errors or the output of running the compiled program.
+    </p>
+    <p>
+      <a href="https://github.com/andrewkchan/puffscript">Source code</a>
+      <a href="https://github.com/andrewkchan/puffscript/blob/main/README.md">Documentation</a>
+    </p>
+  </header>
+  <div class="flex-container">
+    <div id="puff-box" class="flex-child">
+      <div class="toolbar">
+        <div class="left">
+          Puffscript
+        </div>
+        <div class="right">
+          <label>example:</label>
+          <select id="select" class="form-select"></select>
+        </div>
+      </div>
+    </div>
+    <div id="wat-box" class="flex-child">
+      <div class="toolbar">
+        <div class="left">
+          WAT
+        </div>
+      </div>
+      <pre id="wat-output" class="output"></pre>
+    </div>
+    <div id="out-box" class="flex-child">
+      <div class="toolbar">
+        <div class="left">
+        Output
+        </div>
+      </div>
+      <pre id="output" class="output"></pre>
+    </div>
+  </div>
+  <script src="./external/codemirror/codemirror.js"></script>
+  <script src="./external/codemirror/simple-mode.js"></script>
+  <script src="./external/wabt/libwabt.js"></script>
+  <script src="demo.js"></script>
+</body>
+</html>

@@ -96,20 +96,22 @@
     TokenType2[TokenType2["PERCENT"] = 36] = "PERCENT";
     TokenType2[TokenType2["BYTE"] = 37] = "BYTE";
     TokenType2[TokenType2["BOOL"] = 38] = "BOOL";
-    TokenType2[TokenType2["DEF"] = 39] = "DEF";
-    TokenType2[TokenType2["ELSE"] = 40] = "ELSE";
-    TokenType2[TokenType2["FALSE"] = 41] = "FALSE";
-    TokenType2[TokenType2["FOR"] = 42] = "FOR";
-    TokenType2[TokenType2["FLOAT"] = 43] = "FLOAT";
-    TokenType2[TokenType2["IF"] = 44] = "IF";
-    TokenType2[TokenType2["INT"] = 45] = "INT";
-    TokenType2[TokenType2["LEN"] = 46] = "LEN";
-    TokenType2[TokenType2["PRINT"] = 47] = "PRINT";
-    TokenType2[TokenType2["RETURN"] = 48] = "RETURN";
-    TokenType2[TokenType2["TRUE"] = 49] = "TRUE";
-    TokenType2[TokenType2["VAR"] = 50] = "VAR";
-    TokenType2[TokenType2["WHILE"] = 51] = "WHILE";
-    TokenType2[TokenType2["EOF"] = 52] = "EOF";
+    TokenType2[TokenType2["BREAK"] = 39] = "BREAK";
+    TokenType2[TokenType2["CONTINUE"] = 40] = "CONTINUE";
+    TokenType2[TokenType2["DEF"] = 41] = "DEF";
+    TokenType2[TokenType2["ELSE"] = 42] = "ELSE";
+    TokenType2[TokenType2["FALSE"] = 43] = "FALSE";
+    TokenType2[TokenType2["FOR"] = 44] = "FOR";
+    TokenType2[TokenType2["FLOAT"] = 45] = "FLOAT";
+    TokenType2[TokenType2["IF"] = 46] = "IF";
+    TokenType2[TokenType2["INT"] = 47] = "INT";
+    TokenType2[TokenType2["LEN"] = 48] = "LEN";
+    TokenType2[TokenType2["PRINT"] = 49] = "PRINT";
+    TokenType2[TokenType2["RETURN"] = 50] = "RETURN";
+    TokenType2[TokenType2["TRUE"] = 51] = "TRUE";
+    TokenType2[TokenType2["VAR"] = 52] = "VAR";
+    TokenType2[TokenType2["WHILE"] = 53] = "WHILE";
+    TokenType2[TokenType2["EOF"] = 54] = "EOF";
     return TokenType2;
   })(TokenType || {});
   var TokenPattern = {
@@ -152,20 +154,22 @@
     [36 /* PERCENT */]: /%/y,
     [37 /* BYTE */]: /byte/y,
     [38 /* BOOL */]: /bool/y,
-    [39 /* DEF */]: /def/y,
-    [40 /* ELSE */]: /else/y,
-    [41 /* FALSE */]: /false/y,
-    [42 /* FOR */]: /for/y,
-    [43 /* FLOAT */]: /float/y,
-    [44 /* IF */]: /if/y,
-    [45 /* INT */]: /int/y,
-    [46 /* LEN */]: /len/y,
-    [47 /* PRINT */]: /print/y,
-    [48 /* RETURN */]: /return/y,
-    [49 /* TRUE */]: /true/y,
-    [50 /* VAR */]: /var/y,
-    [51 /* WHILE */]: /while/y,
-    [52 /* EOF */]: /$/y
+    [39 /* BREAK */]: /break/y,
+    [40 /* CONTINUE */]: /continue/y,
+    [41 /* DEF */]: /def/y,
+    [42 /* ELSE */]: /else/y,
+    [43 /* FALSE */]: /false/y,
+    [44 /* FOR */]: /for/y,
+    [45 /* FLOAT */]: /float/y,
+    [46 /* IF */]: /if/y,
+    [47 /* INT */]: /int/y,
+    [48 /* LEN */]: /len/y,
+    [49 /* PRINT */]: /print/y,
+    [50 /* RETURN */]: /return/y,
+    [51 /* TRUE */]: /true/y,
+    [52 /* VAR */]: /var/y,
+    [53 /* WHILE */]: /while/y,
+    [54 /* EOF */]: /$/y
   };
 
   // src/scanner.ts
@@ -249,7 +253,7 @@ ${ptr}` : snippet;
               const lexeme = m[0];
               if (t === 0 /* IDENTIFIER */) {
                 keyword:
-                  for (let k = 37 /* BYTE */; k <= 51 /* WHILE */; k++) {
+                  for (let k = 37 /* BYTE */; k <= 53 /* WHILE */; k++) {
                     const keywordMatch = match(source, current, TokenPattern[k]);
                     if (keywordMatch !== null && keywordMatch[0] === lexeme) {
                       t = k;
@@ -292,7 +296,7 @@ ${ptr}` : snippet;
         reportError(line, `Unexpected character '${source.charAt(current)}'.`);
         current++;
       }
-    tokens.push(new Token(52 /* EOF */, "", null, current, source));
+    tokens.push(new Token(54 /* EOF */, "", null, current, source));
     return tokens;
   }
 
@@ -315,10 +319,11 @@ ${ptr}` : snippet;
     NodeKind2[NodeKind2["EXPRESSION_STMT"] = 14] = "EXPRESSION_STMT";
     NodeKind2[NodeKind2["FUNCTION_STMT"] = 15] = "FUNCTION_STMT";
     NodeKind2[NodeKind2["IF_STMT"] = 16] = "IF_STMT";
-    NodeKind2[NodeKind2["PRINT_STMT"] = 17] = "PRINT_STMT";
-    NodeKind2[NodeKind2["RETURN_STMT"] = 18] = "RETURN_STMT";
-    NodeKind2[NodeKind2["VAR_STMT"] = 19] = "VAR_STMT";
-    NodeKind2[NodeKind2["WHILE_STMT"] = 20] = "WHILE_STMT";
+    NodeKind2[NodeKind2["LOOP_CONTROL_STMT"] = 17] = "LOOP_CONTROL_STMT";
+    NodeKind2[NodeKind2["PRINT_STMT"] = 18] = "PRINT_STMT";
+    NodeKind2[NodeKind2["RETURN_STMT"] = 19] = "RETURN_STMT";
+    NodeKind2[NodeKind2["VAR_STMT"] = 20] = "VAR_STMT";
+    NodeKind2[NodeKind2["WHILE_STMT"] = 21] = "WHILE_STMT";
     return NodeKind2;
   })(NodeKind || {});
   function assignExpr({ left, operator, right }) {
@@ -727,9 +732,16 @@ ${ptr}` : snippet;
       isLiveAtEnd: null
     };
   }
+  function loopControlStmt({ keyword }) {
+    return {
+      kind: 17 /* LOOP_CONTROL_STMT */,
+      keyword,
+      isLiveAtEnd: null
+    };
+  }
   function printStmt({ expression, keyword }) {
     return {
-      kind: 17 /* PRINT_STMT */,
+      kind: 18 /* PRINT_STMT */,
       keyword,
       expression,
       isLiveAtEnd: null
@@ -737,7 +749,7 @@ ${ptr}` : snippet;
   }
   function returnStmt({ keyword, value }) {
     return {
-      kind: 18 /* RETURN_STMT */,
+      kind: 19 /* RETURN_STMT */,
       keyword,
       value,
       isLiveAtEnd: null
@@ -745,7 +757,7 @@ ${ptr}` : snippet;
   }
   function varStmt({ name, initializer, type, symbol }) {
     return {
-      kind: 19 /* VAR_STMT */,
+      kind: 20 /* VAR_STMT */,
       name,
       initializer,
       type,
@@ -753,11 +765,12 @@ ${ptr}` : snippet;
       symbol
     };
   }
-  function whileStmt({ expression, body }) {
+  function whileStmt({ expression, body, increment }) {
     return {
-      kind: 20 /* WHILE_STMT */,
+      kind: 21 /* WHILE_STMT */,
       expression,
       body,
+      increment: increment != null ? increment : null,
       isLiveAtEnd: null
     };
   }
@@ -1018,21 +1031,26 @@ ${ptr}` : snippet;
         out += ")";
         break;
       }
-      case 17 /* PRINT_STMT */: {
+      case 17 /* LOOP_CONTROL_STMT */: {
+        const op = node;
+        out += `(${op.keyword.lexeme})`;
+        break;
+      }
+      case 18 /* PRINT_STMT */: {
         const op = node;
         out += "(";
         out += `print ${astToSExpr(op.expression)}`;
         out += ")";
         break;
       }
-      case 18 /* RETURN_STMT */: {
+      case 19 /* RETURN_STMT */: {
         const op = node;
         out += "(";
         out += `return ${op.value !== null ? astToSExpr(op.value) : "void"}`;
         out += ")";
         break;
       }
-      case 19 /* VAR_STMT */: {
+      case 20 /* VAR_STMT */: {
         const op = node;
         out += "(";
         out += `var ${op.name.lexeme} `;
@@ -1043,10 +1061,13 @@ ${ptr}` : snippet;
         out += ")";
         break;
       }
-      case 20 /* WHILE_STMT */: {
+      case 21 /* WHILE_STMT */: {
         const op = node;
         out += "(";
         out += `while ${astToSExpr(op.expression)} ${astToSExpr(op.body)}`;
+        if (op.increment) {
+          out += ` ${astToSExpr(op.increment)}`;
+        }
         out += ")";
         break;
       }
@@ -1122,12 +1143,12 @@ ${ptr}` : snippet;
           return;
         }
         switch (peek().type) {
-          case 39 /* DEF */:
-          case 50 /* VAR */:
-          case 44 /* IF */:
-          case 47 /* PRINT */:
-          case 48 /* RETURN */:
-          case 51 /* WHILE */: {
+          case 41 /* DEF */:
+          case 52 /* VAR */:
+          case 46 /* IF */:
+          case 49 /* PRINT */:
+          case 50 /* RETURN */:
+          case 53 /* WHILE */: {
             return;
           }
           default: {
@@ -1138,12 +1159,12 @@ ${ptr}` : snippet;
       }
     }
     function isAtEnd() {
-      return peek().type === 52 /* EOF */;
+      return peek().type === 54 /* EOF */;
     }
     function topDecl() {
-      if (match2(39 /* DEF */))
+      if (match2(41 /* DEF */))
         return funDecl();
-      if (match2(50 /* VAR */))
+      if (match2(52 /* VAR */))
         return varDecl();
       throw parseError("Only variable declarations and function definitions allowed at the top-level.");
     }
@@ -1223,19 +1244,19 @@ ${ptr}` : snippet;
       return node;
     }
     function statement() {
-      if (match2(44 /* IF */)) {
+      if (match2(46 /* IF */)) {
         return ifStmt2();
       }
-      if (match2(47 /* PRINT */)) {
+      if (match2(49 /* PRINT */)) {
         return printStmt2();
       }
-      if (match2(51 /* WHILE */)) {
+      if (match2(53 /* WHILE */)) {
         return whileStmt2();
       }
-      if (match2(42 /* FOR */)) {
+      if (match2(44 /* FOR */)) {
         return forStmt();
       }
-      if (match2(48 /* RETURN */)) {
+      if (match2(50 /* RETURN */)) {
         return returnStmt2();
       }
       if (match2(9 /* LEFT_BRACE */)) {
@@ -1246,6 +1267,11 @@ ${ptr}` : snippet;
           statements,
           scope
         });
+      }
+      if (match2(39 /* BREAK */) || match2(40 /* CONTINUE */)) {
+        const keyword = previous();
+        consume(14 /* SEMICOLON */, "expect ';' after statement.");
+        return loopControlStmt({ keyword });
       }
       return expressionStmt2();
     }
@@ -1262,7 +1288,7 @@ ${ptr}` : snippet;
       consume(8 /* RIGHT_PAREN */, "Expect ')' after if condition.");
       const thenBranch = statement();
       let elseBranch = null;
-      if (match2(40 /* ELSE */)) {
+      if (match2(42 /* ELSE */)) {
         elseBranch = statement();
       }
       return ifStmt({
@@ -1311,7 +1337,7 @@ ${ptr}` : snippet;
       let initializer = null;
       if (match2(14 /* SEMICOLON */)) {
         initializer = null;
-      } else if (match2(50 /* VAR */)) {
+      } else if (match2(52 /* VAR */)) {
         initializer = varDecl();
       } else {
         initializer = expressionStmt2();
@@ -1337,8 +1363,9 @@ ${ptr}` : snippet;
       const outerScope = popScope();
       const loop = whileStmt({
         expression: condition,
+        increment: increment !== null ? expressionStmt({ expression: increment }) : null,
         body: blockStmt({
-          statements: increment ? [body, expressionStmt({ expression: increment })] : [body],
+          statements: [body],
           scope: innerScope
         })
       });
@@ -1351,7 +1378,7 @@ ${ptr}` : snippet;
       const statements = [];
       while (!check(10 /* RIGHT_BRACE */) && !isAtEnd()) {
         try {
-          if (match2(50 /* VAR */)) {
+          if (match2(52 /* VAR */)) {
             const varStmt2 = varDecl();
             statements.push(varStmt2);
           } else {
@@ -1381,9 +1408,9 @@ ${ptr}` : snippet;
           elementType,
           length
         };
-      } else if (match2(45 /* INT */)) {
+      } else if (match2(47 /* INT */)) {
         baseType = IntType;
-      } else if (match2(43 /* FLOAT */)) {
+      } else if (match2(45 /* FLOAT */)) {
         baseType = FloatType;
       } else if (match2(37 /* BYTE */)) {
         baseType = ByteType;
@@ -1637,9 +1664,9 @@ ${ptr}` : snippet;
       return expr;
     }
     function exprPrimary() {
-      if (match2(49 /* TRUE */) || match2(41 /* FALSE */)) {
+      if (match2(51 /* TRUE */) || match2(43 /* FALSE */)) {
         return literalExpr({
-          value: previous().type === 49 /* TRUE */ ? true : false,
+          value: previous().type === 51 /* TRUE */ ? true : false,
           type: BoolType
         });
       }
@@ -1726,7 +1753,7 @@ ${ptr}` : snippet;
         consume(12 /* RIGHT_BRACKET */, "Expect ']' after list literal.");
         return listExpr({ bracket, values });
       }
-      if (check(45 /* INT */) || check(43 /* FLOAT */) || check(37 /* BYTE */) || check(38 /* BOOL */)) {
+      if (check(47 /* INT */) || check(45 /* FLOAT */) || check(37 /* BYTE */) || check(38 /* BOOL */)) {
         const castType = type();
         switch (castType.category) {
           case 5 /* INT */:
@@ -1750,7 +1777,7 @@ ${ptr}` : snippet;
           value
         });
       }
-      if (match2(46 /* LEN */)) {
+      if (match2(48 /* LEN */)) {
         consume(7 /* LEFT_PAREN */, "Expect '(' before len expression.");
         const value = expression();
         consume(8 /* RIGHT_PAREN */, "Expect ')' after len expression.");
@@ -1801,6 +1828,16 @@ ${ptr}` : snippet;
     function popFunction() {
       return functionStack.pop();
     }
+    let loopStack = [];
+    function peekLoop() {
+      return loopStack.length > 0 ? loopStack[loopStack.length - 1] : null;
+    }
+    function pushLoop(loop) {
+      loopStack.push(loop);
+    }
+    function popLoop() {
+      return loopStack.pop();
+    }
     const walkedSet = /* @__PURE__ */ new Set();
     const walked = [];
     function preVisit(node) {
@@ -1808,7 +1845,7 @@ ${ptr}` : snippet;
       walked.push(node);
     }
     function postVisit(node) {
-      if (node.kind === 19 /* VAR_STMT */) {
+      if (node.kind === 20 /* VAR_STMT */) {
         const isGlobal = scopes.length === 1;
         if (isGlobal) {
           globalInitOrder.push(node);
@@ -1829,7 +1866,7 @@ ${ptr}` : snippet;
       if (!isEqual(node.resolvedType, type)) {
         if (canCoerce(node.resolvedType, type) || node.kind === 9 /* LITERAL_EXPR */ && canCoerceNumberLiteral(node.value, type)) {
           out = castExpr({
-            token: fakeToken2(52 /* EOF */, ""),
+            token: fakeToken2(54 /* EOF */, ""),
             type,
             value: node
           });
@@ -2187,11 +2224,11 @@ ${ptr}` : snippet;
               functionStack = oldFunctionStack;
             } else if (symbolDecl && walkedSet.has(symbolDecl)) {
               let cyclicVar = null;
-              if (symbolDecl.kind === 19 /* VAR_STMT */) {
+              if (symbolDecl.kind === 20 /* VAR_STMT */) {
                 cyclicVar = symbolDecl;
               } else {
                 for (let i = walked.length - 1; walked[i] !== symbolDecl; i--) {
-                  if (walked[i].kind === 19 /* VAR_STMT */) {
+                  if (walked[i].kind === 20 /* VAR_STMT */) {
                     cyclicVar = walked[i];
                     break;
                   }
@@ -2289,7 +2326,15 @@ ${cyclicVar.name.lineStr()}`);
           op.isLiveAtEnd = isLiveAfterThen || isLiveAfterElse;
           break;
         }
-        case 17 /* PRINT_STMT */: {
+        case 17 /* LOOP_CONTROL_STMT */: {
+          const op = node;
+          if (peekLoop() === null) {
+            resolveError(op.keyword, `Cannot ${op.keyword.lexeme} outside a loop.`);
+          }
+          op.isLiveAtEnd = isLiveAtEnd;
+          break;
+        }
+        case 18 /* PRINT_STMT */: {
           const op = node;
           resolveNode(op.expression, isLiveAtEnd);
           if (isEqual(op.expression.resolvedType, VoidType)) {
@@ -2298,7 +2343,7 @@ ${cyclicVar.name.lineStr()}`);
           op.isLiveAtEnd = isLiveAtEnd;
           break;
         }
-        case 18 /* RETURN_STMT */: {
+        case 19 /* RETURN_STMT */: {
           const op = node;
           const inFunction = peekFunction();
           if (inFunction === null) {
@@ -2318,7 +2363,7 @@ ${cyclicVar.name.lineStr()}`);
           op.isLiveAtEnd = false;
           break;
         }
-        case 19 /* VAR_STMT */: {
+        case 20 /* VAR_STMT */: {
           const op = node;
           resolveNode(op.initializer, isLiveAtEnd);
           if (op.initializer.resolvedType === null) {
@@ -2343,10 +2388,15 @@ ${cyclicVar.name.lineStr()}`);
           op.isLiveAtEnd = isLiveAtEnd;
           break;
         }
-        case 20 /* WHILE_STMT */: {
+        case 21 /* WHILE_STMT */: {
           const op = node;
           resolveNode(op.expression, isLiveAtEnd);
+          pushLoop(op);
           resolveNode(op.body, isLiveAtEnd);
+          popLoop();
+          if (op.increment) {
+            resolveNode(op.increment, isLiveAtEnd);
+          }
           op.isLiveAtEnd = op.body.isLiveAtEnd;
           break;
         }
@@ -2433,6 +2483,16 @@ ${cyclicVar.name.lineStr()}`);
     }
     const skip = /* @__PURE__ */ new Set();
     let nextLabelID = 0;
+    const loopStack = [];
+    function peekLoop() {
+      return loopStack.length > 0 ? loopStack[loopStack.length - 1] : null;
+    }
+    function pushLoop(loop) {
+      loopStack.push(loop);
+    }
+    function popLoop() {
+      return loopStack.pop();
+    }
     function emitPushMem(type) {
       debugLine(`;; emitPushMem(${typeToString(type)})`);
       emitAllocStackVal(type);
@@ -3258,14 +3318,40 @@ ${cyclicVar.name.lineStr()}`);
           line(`)`);
           break;
         }
-        case 17 /* PRINT_STMT */: {
+        case 17 /* LOOP_CONTROL_STMT */: {
+          const op = node;
+          const loop = peekLoop();
+          if (loop) {
+            switch (op.keyword.lexeme) {
+              case "break": {
+                line(`br ${loop.outerLabel}`);
+                break;
+              }
+              case "continue": {
+                if (loop.incrementLabel) {
+                  line(`br ${loop.incrementLabel}`);
+                } else {
+                  line(`br ${loop.innerLabel}`);
+                }
+                break;
+              }
+              default: {
+                throw new Error("Unhandled loop control statement");
+              }
+            }
+          } else {
+            throw new Error("Unexpected loop control statement outside of loop");
+          }
+          break;
+        }
+        case 18 /* PRINT_STMT */: {
           const op = node;
           visit(op.expression);
           emitPrintVal(op.expression.resolvedType);
           line(`call ${wasmId("__flush__")}`);
           break;
         }
-        case 18 /* RETURN_STMT */: {
+        case 19 /* RETURN_STMT */: {
           const op = node;
           if (op.value) {
             visit(op.value);
@@ -3275,17 +3361,18 @@ ${cyclicVar.name.lineStr()}`);
           line(`return`);
           break;
         }
-        case 19 /* VAR_STMT */: {
+        case 20 /* VAR_STMT */: {
           const op = node;
           visit(op.initializer);
           emitSetSymbol(op.symbol);
           line(`drop`);
           break;
         }
-        case 20 /* WHILE_STMT */: {
+        case 21 /* WHILE_STMT */: {
           const op = node;
           const outerLabel = wasmId(nextLabelID++ + "");
           const innerLabel = wasmId(nextLabelID++ + "");
+          const incrementLabel = op.increment ? wasmId(nextLabelID++ + "") : null;
           line(`(block ${outerLabel}`);
           {
             indent();
@@ -3295,7 +3382,18 @@ ${cyclicVar.name.lineStr()}`);
               visit(op.expression);
               line(`i32.eqz`);
               line(`br_if ${outerLabel}`);
+              if (op.increment) {
+                line(`(block ${incrementLabel}`);
+                indent();
+              }
+              pushLoop({ outerLabel, innerLabel, incrementLabel });
               visit(op.body);
+              popLoop();
+              if (op.increment) {
+                dedent();
+                line(`)`);
+                visit(op.increment);
+              }
               line(`br ${innerLabel}`);
               dedent();
             }

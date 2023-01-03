@@ -129,7 +129,7 @@ TODOs:
 
 **Control flow**
 
-C-style if-else statements, while loops, and for loops are supported:
+C-style if-else statements, while/for loops, break/continue are supported:
 
 ```
 if (cond1) {
@@ -145,6 +145,7 @@ while (loopCond) {
 }
 for (var p = n; p != end; p = next(n)) {
   // ...
+  if (...) break;
 }
 ```
 

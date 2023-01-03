@@ -1,5 +1,3 @@
-import { TextDecoder, TextEncoder } from "util";
-
 export type ReportError = (line: number, msg: string) => void
 
 export function assertUnreachable(x: never): never {
@@ -40,6 +38,6 @@ export class UTF8Codec {
     if (char.length !== 1) {
       throw new Error("Expected character")
     }
-    return this.encoder.encodeInto(char, this.charBuf).written > 0
+    return this.encoder.encodeInto(char, this.charBuf).written! > 0
   }
 }

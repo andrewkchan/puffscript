@@ -84,9 +84,10 @@ async function expectOutput(source: string, expectedOutput: string) {
           ioBuffer = ""
         }
       }
-    })
-    instance.instance.exports.__init_globals__()
-    instance.instance.exports.main()
+    });
+    const exports = instance.instance.exports as any
+    exports.__init_globals__()
+    exports.main()
     expect(output).toBe(expectedOutput)
   }
 }
@@ -2240,7 +2241,9 @@ hello world
       for (var p = pb_start; p != pb_end - 4; p = p + 1) {
         p~ = 255;
       }
-      print data; // [255, 255, 255, 255, 0, 0, 0, 0]
+      for (var i = 0; i < 8; i+=1) {
+        print data[i];
+      }
       var pi_start = int~(pb_start);
       var pi_end = int~(pb_end);
       for (var p = pi_start; p != pi_end; p = p + 1) {
@@ -2249,7 +2252,14 @@ hello world
     }
     `,
     `
-[255, 255, 255, 255, 0, 0, 0, 0]
+255
+255
+255
+255
+0
+0
+0
+0
 -1
 0
 `.trim() + "\n")
@@ -2302,6 +2312,29 @@ hello world
 1.5
 [2, 1, 6, 2, 1]
 500
+`.trim() + "\n")
+  })
+
+  test("String literals", async () => {
+    await expectOutput(`
+    var g = "hello.";
+    def main() {
+      var l = "hello.";
+      l[0] = 'H';
+      l[len(l)-1] = '!';
+      var l2 = "this is a 'quote'";
+      var l3 = "this has \\backslashes\\";
+      print g;
+      print l;
+      print l2;
+      print l3;
+    }
+    `,
+    `
+hello.
+Hello!
+this is a 'quote'
+this has \\backslashes\\
 `.trim() + "\n")
   })
 })

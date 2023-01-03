@@ -43,7 +43,7 @@ enum ExprMode {
 // WAT strings cannot contain backslashes, ASCII control sequences, or quotes:
 // https://webassembly.github.io/spec/core/text/values.html#strings
 function escapeString(str: string): string {
-  return str.replace(/'/, '\'').replace(/\\/, '\\\\').replace(/"/, '\"')
+  return str.replace(/'/g, '\'').replace(/\\/g, '\\\\').replace(/"/g, '\"')
 }
 
 // Returns the WASM type used to represent values of the given type in the WASM (host) stack.

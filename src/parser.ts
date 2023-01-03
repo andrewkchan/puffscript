@@ -264,9 +264,11 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   function printStmt(): ast.PrintStmt {
+    const keyword = previous()
     const expr = expression()
     consume(TokenType.SEMICOLON, "expect ';' after print statement.")
     return ast.printStmt({
+      keyword,
       expression: expr
     })
   }

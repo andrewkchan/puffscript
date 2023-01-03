@@ -579,6 +579,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.PRINT_STMT: {
         const op = node as ast.PrintStmt
         resolveNode(op.expression, isLiveAtEnd)
+        if (ast.isEqual(op.expression.resolvedType!, ast.VoidType)) {
+          resolveError(op.keyword, `Cannot print value of type 'void'.`)
+        }
         op.isLiveAtEnd = isLiveAtEnd
         break
       }

@@ -672,13 +672,15 @@ export function ifStmt({ expression, thenBranch, elseBranch }: { expression: Exp
 
 export interface PrintStmt extends Node {
   kind: NodeKind.PRINT_STMT
+  keyword: Token
   expression: Expr
   isLiveAtEnd: boolean | null // filled in by resolver pass
 }
 
-export function printStmt({ expression }: { expression: Expr }): PrintStmt {
+export function printStmt({ expression, keyword }: { expression: Expr; keyword: Token }): PrintStmt {
   return {
     kind: NodeKind.PRINT_STMT,
+    keyword,
     expression,
     isLiveAtEnd: null
   }

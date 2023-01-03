@@ -1265,6 +1265,18 @@ describe("type checking", () => {
       "34: Invalid operand for unary operator '&'.",
     ])
   })
+
+  test("non-printable type", () => {
+    expectResolveErrors(`
+    def main() {
+      print foo(); // error
+    }
+    def foo() {}
+    `,
+    [
+      "2: Cannot print value of type 'void'."
+    ])
+  })
 })
 
 describe("end to end", () => {

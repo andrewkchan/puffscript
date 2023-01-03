@@ -235,6 +235,12 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       })
     }
 
+    if (match(TokenType.BREAK) || match(TokenType.CONTINUE)) {
+      const keyword = previous()
+      consume(TokenType.SEMICOLON, "expect ';' after statement.")
+      return ast.loopControlStmt({ keyword })
+    }
+
     return expressionStmt()
   }
 
@@ -336,8 +342,9 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
     const loop = ast.whileStmt({
       expression: condition,
+      increment: increment !== null ? ast.expressionStmt({ expression: increment }) : null,
       body: ast.blockStmt({
-        statements: increment ? [body, ast.expressionStmt({ expression: increment })] : [body],
+        statements: [body],
         scope: innerScope
       })
     })

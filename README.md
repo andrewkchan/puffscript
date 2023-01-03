@@ -150,7 +150,6 @@ for (var p = n; p != end; p = next(n)) {
 
 TODOs:
 
-- `break` and `continue` in loops
 - switch statements
 - ternary operator
 

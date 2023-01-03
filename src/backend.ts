@@ -92,6 +92,12 @@ function isVariableInRegister(symbol: ast.VariableSymbol | ast.ParamSymbol): boo
 
 const DEBUG_COMMENTS = true
 
+interface LoopLabel {
+  outerLabel: string
+  innerLabel: string
+  incrementLabel: string | null
+}
+
 // Emits WAT code for the resolved context.
 export function emit(context: ast.Context): string {
   // stores locations of globals.
@@ -127,6 +133,16 @@ export function emit(context: ast.Context): string {
   const skip: Set<ast.Node> = new Set()
 
   let nextLabelID = 0
+  const loopStack: LoopLabel[] = []
+  function peekLoop(): LoopLabel | null {
+    return loopStack.length > 0 ? loopStack[loopStack.length - 1] : null
+  }
+  function pushLoop(loop: LoopLabel) {
+    loopStack.push(loop)
+  }
+  function popLoop(): LoopLabel {
+    return loopStack.pop()!
+  }
 
   // Emit code to:
   // 1. push a value of the given type to the in-memory stack (+adjust __stack_ptr__)
@@ -1097,6 +1113,32 @@ export function emit(context: ast.Context): string {
         line(`)`)
         break
       }
+      case ast.NodeKind.LOOP_CONTROL_STMT: {
+        const op = node as ast.LoopControlStmt
+        const loop = peekLoop()
+        if (loop) {
+          switch (op.keyword.lexeme) {
+            case "break": {
+              line(`br ${loop.outerLabel}`)
+              break
+            }
+            case "continue": {
+              if (loop.incrementLabel) {
+                line(`br ${loop.incrementLabel}`)
+              } else {
+                line(`br ${loop.innerLabel}`)
+              }
+              break
+            }
+            default: {
+              throw new Error("Unhandled loop control statement")
+            }
+          }
+        } else {
+          throw new Error("Unexpected loop control statement outside of loop")
+        }
+        break
+      }
       case ast.NodeKind.PRINT_STMT: {
         const op = node as ast.PrintStmt
         visit(op.expression)
@@ -1125,6 +1167,7 @@ export function emit(context: ast.Context): string {
         const op = node as ast.WhileStmt
         const outerLabel = wasmId(nextLabelID++ + "")
         const innerLabel = wasmId(nextLabelID++ + "")
+        const incrementLabel = op.increment ? wasmId(nextLabelID++ + "") : null
         line(`(block ${outerLabel}`)
         {
           indent()
@@ -1134,7 +1177,21 @@ export function emit(context: ast.Context): string {
             visit(op.expression)
             line(`i32.eqz`)
             line(`br_if ${outerLabel}`)
+            if (op.increment) {
+              line(`(block ${incrementLabel}`)
+              indent()
+            }
+
+            pushLoop({outerLabel, innerLabel, incrementLabel})
             visit(op.body)
+            popLoop()
+
+            if (op.increment) {
+              dedent()
+              line(`)`)
+              visit(op.increment)
+            }
+
             line(`br ${innerLabel}`)
             dedent()
           }

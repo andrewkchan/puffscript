@@ -38,6 +38,17 @@ export function resolve(context: ast.Context, reportError: ReportError) {
     return functionStack.pop()!
   }
 
+  let loopStack: ast.WhileStmt[] = []
+  function peekLoop(): ast.WhileStmt | null {
+    return loopStack.length > 0 ? loopStack[loopStack.length - 1] : null
+  }
+  function pushLoop(loop: ast.WhileStmt) {
+    loopStack.push(loop)
+  }
+  function popLoop(): ast.WhileStmt {
+    return loopStack.pop()!
+  }
+
   // Keeps track of all AST nodes (including from non-tree dependency edges)
   // walked starting from a top-level statement.
   //
@@ -576,6 +587,16 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         op.isLiveAtEnd = isLiveAfterThen || isLiveAfterElse
         break
       }
+      case ast.NodeKind.LOOP_CONTROL_STMT: {
+        const op = node as ast.LoopControlStmt
+        if (peekLoop() === null) {
+          resolveError(op.keyword, `Cannot ${op.keyword.lexeme} outside a loop.`)
+        }
+        // Control flow is considered live as long as we don't hit a "return".
+        // This is not affected by breaks/continues.
+        op.isLiveAtEnd = isLiveAtEnd
+        break
+      }
       case ast.NodeKind.PRINT_STMT: {
         const op = node as ast.PrintStmt
         resolveNode(op.expression, isLiveAtEnd)
@@ -635,7 +656,13 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.WHILE_STMT: {
         const op = node as ast.WhileStmt
         resolveNode(op.expression, isLiveAtEnd)
+        pushLoop(op)
         resolveNode(op.body, isLiveAtEnd)
+        popLoop()
+        if (op.increment) {
+          // This is an expression statement and cannot affect op.isLiveAtEnd
+          resolveNode(op.increment, isLiveAtEnd)
+        }
         op.isLiveAtEnd = op.body.isLiveAtEnd
         break
       }

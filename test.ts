@@ -1277,6 +1277,42 @@ describe("type checking", () => {
       "2: Cannot print value of type 'void'."
     ])
   })
+
+  test("break/continue outside loop", () => {
+    expectResolveErrors(`
+    def main() {
+      break; // error
+      continue; // error
+      foo(1, 2);
+    }
+    def foo(x int, y int) {
+      break; // error
+      var i = 0;
+      while (i < 5) {
+        if (i == y) {
+          break; // ok
+        }
+        if (i == x) {
+          continue; // ok
+        }
+        for (var j = 0; j < i; j += 1) {
+          if (j == y) {
+            break; // ok
+          }
+          if (j == x) {
+            continue; // ok
+          }
+          print j;
+        }
+      }
+    }
+    `,
+    [
+      "2: Cannot break outside a loop.",
+      "3: Cannot continue outside a loop.",
+      "7: Cannot break outside a loop.",
+    ])
+  })
 })
 
 describe("end to end", () => {
@@ -2347,6 +2383,68 @@ hello.
 Hello!
 this is a 'quote'
 this has \\backslashes\\
+`.trim() + "\n")
+  })
+
+  test("break/continue", async () => {
+    await expectOutput(`
+    var BREAK = 1;
+    var CONTINUE = 2;
+    def main() {
+      loopy(-1, 2, BREAK);
+      loopy(-1, 2, CONTINUE);
+      loopy(3, -1, BREAK);
+      loopy(2, -1, CONTINUE);
+      loopy(1, 1, CONTINUE);
+    }
+    def loopy(outerX int, innerX int, mode int) {
+      for (var i = 1; i <= 3; i += 1) {
+        if (i == outerX) {
+          if (mode == BREAK) {
+            break;
+          }
+          if (mode == CONTINUE) {
+            continue;
+          }
+        }
+        for (var j = 1; j <= i; j += 1) {
+          if (j == innerX) {
+            if (mode == BREAK) {
+              break;
+            }
+            if (mode == CONTINUE) {
+              continue;
+            }
+          }
+          print j;
+        }
+      }
+      print "done";
+    }
+    `,
+    `
+1
+1
+1
+done
+1
+1
+1
+3
+done
+1
+1
+2
+done
+1
+1
+2
+3
+done
+2
+2
+3
+done
 `.trim() + "\n")
   })
 })

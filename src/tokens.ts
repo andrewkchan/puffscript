@@ -48,6 +48,8 @@ export enum TokenType {
   // Keywords.
   BYTE,
   BOOL,
+  BREAK,
+  CONTINUE,
   DEF,
   ELSE,
   FALSE,
@@ -112,6 +114,8 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   // Keywords.
   [TokenType.BYTE]: /byte/y,
   [TokenType.BOOL]: /bool/y,
+  [TokenType.BREAK]: /break/y,
+  [TokenType.CONTINUE]: /continue/y,
   [TokenType.DEF]: /def/y,
   [TokenType.ELSE]: /else/y,
   [TokenType.FALSE]: /false/y,

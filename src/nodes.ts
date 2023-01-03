@@ -22,6 +22,7 @@ export enum NodeKind {
   EXPRESSION_STMT,
   FUNCTION_STMT,
   IF_STMT,
+  LOOP_CONTROL_STMT,
   PRINT_STMT,
   RETURN_STMT,
   VAR_STMT,
@@ -583,7 +584,7 @@ export interface Param {
   name: Token
 }
 
-export type Stmt = BlockStmt | ExpressionStmt | IfStmt | PrintStmt | ReturnStmt | VarStmt | WhileStmt
+export type Stmt = BlockStmt | ExpressionStmt | IfStmt | LoopControlStmt | PrintStmt | ReturnStmt | VarStmt | WhileStmt
 export type TopStmt = FunctionStmt | VarStmt
 
 export interface BlockStmt extends Node {
@@ -670,6 +671,20 @@ export function ifStmt({ expression, thenBranch, elseBranch }: { expression: Exp
   }
 }
 
+export interface LoopControlStmt extends Node {
+  kind: NodeKind.LOOP_CONTROL_STMT
+  keyword: Token
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function loopControlStmt({ keyword }: { keyword: Token }): LoopControlStmt {
+  return {
+    kind: NodeKind.LOOP_CONTROL_STMT,
+    keyword,
+    isLiveAtEnd: null
+  }
+}
+
 export interface PrintStmt extends Node {
   kind: NodeKind.PRINT_STMT
   keyword: Token
@@ -726,14 +741,16 @@ export interface WhileStmt extends Node {
   kind: NodeKind.WHILE_STMT
   expression: Expr
   body: Stmt
+  increment: ExpressionStmt | null // used by for loops
   isLiveAtEnd: boolean | null // filled in by resolver pass
 }
 
-export function whileStmt({ expression, body }: { expression: Expr; body: Stmt }): WhileStmt {
+export function whileStmt({ expression, body, increment }: { expression: Expr; body: Stmt; increment?: ExpressionStmt | null }): WhileStmt {
   return {
     kind: NodeKind.WHILE_STMT,
     expression,
     body,
+    increment: increment ?? null,
     isLiveAtEnd: null
   }
 }
@@ -1043,6 +1060,11 @@ export function astToSExpr(node: Node): string {
       out += ")"
       break
     }
+    case NodeKind.LOOP_CONTROL_STMT: {
+      const op = node as PrintStmt
+      out += `(${op.keyword.lexeme})`
+      break
+    }
     case NodeKind.PRINT_STMT: {
       const op = node as PrintStmt
       out += "("
@@ -1072,6 +1094,9 @@ export function astToSExpr(node: Node): string {
       const op = node as WhileStmt
       out += "("
       out += `while ${astToSExpr(op.expression)} ${astToSExpr(op.body)}`
+      if (op.increment) {
+        out += ` ${astToSExpr(op.increment)}`
+      }
       out += ")"
       break
     }

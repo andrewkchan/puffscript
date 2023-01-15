@@ -561,8 +561,7 @@ export function canCoerce(from: Type, to: Type): boolean {
           return false
         }
         case TypeCategory.BOOL: {
-          // TODO: Maybe disallow me
-          return true
+          return false
         }
       }
     }
@@ -578,7 +577,7 @@ export function canCoerce(from: Type, to: Type): boolean {
           return true
         }
         case TypeCategory.BOOL: {
-          return true
+          return false
         }
       }
     }

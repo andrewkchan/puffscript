@@ -434,7 +434,7 @@ describe("type checking", () => {
     expectResolveErrors(`
     var u = 1.0 == false;
     var v = -true;
-    var w = !1.5; // ok
+    var w = !1.5; // err
     var x = 1 + true;
     var y = true / false;
     var z = true > false;
@@ -453,6 +453,7 @@ describe("type checking", () => {
     [
       "1: Cannot compare float to bool.",
       "2: Invalid operand type for unary operator '-'.",
+      "3: Cannot implicitly convert operand to 'bool'.",
       "4: Invalid operand types for binary operator '+'.",
       "5: Invalid operand types for binary operator '/'.",
       "6: Invalid operand types for binary operator '>'.",
@@ -1358,9 +1359,9 @@ describe("type checking", () => {
       var bl bool = p.y; // error
       t.id = false; // error
       t.id = 42; // ok
-      t.group = [3.14]; // error
+      t.group = 3.14; // error
       t.group = 'b'; // ok
-      t.isDeluxe = [3.14]; // error
+      t.isDeluxe = 3.14; // error
       t.isDeluxe = false; // ok
     }
     struct Point { x float, y float }
@@ -1396,7 +1397,7 @@ describe("type checking", () => {
     def main() {
       var t1 = Ticket{1, 'a', true}; // ok
       var t2 = Ticket{1, 'a'}; // error!
-      var t3 = Ticket{[3.14], [5.6], ['t']}; // error!
+      var t3 = Ticket{3.14, 5.6, 't'}; // error!
       var t4 = Ticket{1, 'a', true, true}; // error!
     }
     struct Ticket { id int, group byte, isDeluxe bool }

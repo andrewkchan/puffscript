@@ -19,6 +19,7 @@ export enum TokenType {
   LEFT_BRACKET,
   RIGHT_BRACKET,
   COMMA,
+  DOT,
   SEMICOLON,
   TILDE,
 
@@ -60,8 +61,10 @@ export enum TokenType {
   LEN,
   PRINT,
   RETURN,
+  STRUCT,
   TRUE,
   VAR,
+  VOID,
   WHILE,
 
   EOF
@@ -85,6 +88,7 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.LEFT_BRACKET]: /\[/y,
   [TokenType.RIGHT_BRACKET]: /\]/y,
   [TokenType.COMMA]: /,/y,
+  [TokenType.DOT]: /\./y,
   [TokenType.SEMICOLON]: /;/y,
   [TokenType.TILDE]: /~/y,
 
@@ -126,8 +130,10 @@ export const TokenPattern: Readonly<Record<TokenType, RegExp>> = {
   [TokenType.LEN]: /len/y,
   [TokenType.PRINT]: /print/y,
   [TokenType.RETURN]: /return/y,
+  [TokenType.STRUCT]: /struct/y,
   [TokenType.TRUE]: /true/y,
   [TokenType.VAR]: /var/y,
+  [TokenType.VOID]: /void/y,
   [TokenType.WHILE]: /while/y,
 
   [TokenType.EOF]: /* unhandled */ /$/y

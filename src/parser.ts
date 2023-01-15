@@ -96,6 +96,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
       switch (peek().type) {
         case TokenType.DEF:
+        case TokenType.STRUCT:
         case TokenType.VAR:
         case TokenType.IF:
         case TokenType.PRINT:
@@ -118,6 +119,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
   function topDecl(): ast.TopStmt {
     if (match(TokenType.DEF)) return funDecl()
+    if (match(TokenType.STRUCT)) return structDecl()
     if (match(TokenType.VAR)) return varDecl()
 
     throw parseError("Only variable declarations and function definitions allowed at the top-level.")
@@ -176,6 +178,47 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else {
       const symbol = context.functionSymbol(node)
       outerScope.define(name.lexeme, symbol)
+      node.symbol = symbol
+    }
+    return node
+  }
+
+  function structDecl(): ast.StructStmt {
+    const name = consume(TokenType.IDENTIFIER, "Expect identifier after 'struct'.")
+
+    consume(TokenType.LEFT_BRACE, "Expect '{' after struct name.")
+    const members: ast.Param[] = []
+    const memberNames: Set<string> = new Set()
+    while (!check(TokenType.RIGHT_BRACE) && !isAtEnd()) {
+      if (members.length > 0) {
+        consume(TokenType.COMMA, "Missing comma after member.")
+      }
+      const paramName = consume(TokenType.IDENTIFIER, "Expect identifier.")
+      const paramType = type()
+      if (memberNames.has(paramName.lexeme)) {
+        // Don't throw; Remaining members will be parsed + resolved as if duplicate doesn't exist.
+        parseErrorForToken(paramName, `'${paramName.lexeme}' is already declared in member list.`)
+      } else {
+        memberNames.add(paramName.lexeme)
+        members.push({
+          name: paramName,
+          type: paramType
+        })
+      }
+    }
+    consume(TokenType.RIGHT_BRACE, "Expect '}' after member list.")
+
+    const node = ast.structStmt({
+      name,
+      members
+    })
+    const scope = peekScope()
+    if (scope.hasDirect(name.lexeme)) {
+      // Throw; ignore this struct and synchronize to next statement
+      throw parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
+    } else {
+      const symbol = context.structSymbol(node)
+      scope.define(name.lexeme, symbol)
       node.symbol = symbol
     }
     return node
@@ -398,6 +441,9 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       baseType = ast.ByteType
     } else if (match(TokenType.BOOL)) {
       baseType = ast.BoolType
+    } else if (match(TokenType.IDENTIFIER)) {
+      const name = previous()
+      baseType = ast.unresolvedStructType(name)
     }
 
     if (baseType !== null) {
@@ -427,7 +473,8 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (match(TokenType.EQUAL)) {
       const operator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR ||
+          expr.kind === ast.NodeKind.DEREF_EXPR || expr.kind === ast.NodeKind.DOT_EXPR) {
         return ast.assignExpr({
           operator,
           left: expr,
@@ -616,7 +663,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
 
   function exprCall(): ast.Expr {
     let expr = exprPrimary()
-    // can have at most one call in series of calls/indexes (no first class functions)
+    // can have at most one call or construct in series of calls/indexes (no first class functions)
     if (match(TokenType.LEFT_PAREN)) {
       const paren = previous()
       const args: ast.Expr[] = []
@@ -633,9 +680,25 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         paren,
         args
       })
+    } else if (match(TokenType.LEFT_BRACE)) {
+      const brace = previous()
+      const args: ast.Expr[] = []
+      while (!check(TokenType.RIGHT_BRACE) && !isAtEnd()) {
+        if (args.length > 0) {
+          consume(TokenType.COMMA, "Expect ',' between member initializers.")
+        }
+        const arg = expression()
+        args.push(arg)
+      }
+      consume(TokenType.RIGHT_BRACE, "Expect '}' after member initializers.")
+      expr = ast.callExpr({
+        callee: expr,
+        paren: brace,
+        args
+      })
     }
     // can have any number of indexes or pointer dereferences
-    while (match(TokenType.LEFT_BRACKET) || match(TokenType.TILDE)) {
+    while (match(TokenType.LEFT_BRACKET) || match(TokenType.TILDE) || match(TokenType.DOT)) {
       const operator = previous()
       switch (operator.lexeme) {
         case "[": {
@@ -652,6 +715,15 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
           expr = ast.derefExpr({
             operator,
             value: expr
+          })
+          break
+        }
+        case ".": {
+          const identifier = consume(TokenType.IDENTIFIER, "Expect identifier after '.'.")
+          expr = ast.dotExpr({
+            callee: expr,
+            dot: operator,
+            identifier
           })
           break
         }

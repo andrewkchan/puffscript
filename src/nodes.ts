@@ -1,4 +1,5 @@
 import { Token } from './scanner'
+import { TokenType } from './tokens'
 import { assertUnreachable } from './util'
 
 export enum NodeKind {
@@ -8,6 +9,7 @@ export enum NodeKind {
   CALL_EXPR,
   CAST_EXPR,
   DEREF_EXPR,
+  DOT_EXPR,
   GROUP_EXPR,
   INDEX_EXPR,
   LEN_EXPR,
@@ -25,6 +27,7 @@ export enum NodeKind {
   LOOP_CONTROL_STMT,
   PRINT_STMT,
   RETURN_STMT,
+  STRUCT_STMT,
   VAR_STMT,
   WHILE_STMT
 }
@@ -33,17 +36,17 @@ export interface Node {
   kind: NodeKind
 }
 
-export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | DerefExpr | GroupExpr | IndexExpr | LenExpr | ListExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
+export type Expr = AssignExpr | BinaryExpr | CallExpr | CastExpr | DerefExpr | DotExpr | GroupExpr | IndexExpr | LenExpr | ListExpr | LiteralExpr | LogicalExpr | UnaryExpr | VariableExpr
 
 export interface AssignExpr extends Node {
   kind: NodeKind.ASSIGN_EXPR
   operator: Token
-  left: IndexExpr | VariableExpr | DerefExpr
+  left: IndexExpr | VariableExpr | DerefExpr | DotExpr
   right: Expr
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function assignExpr({ left, operator, right }: { left: IndexExpr | VariableExpr | DerefExpr; operator: Token; right: Expr }): AssignExpr {
+export function assignExpr({ left, operator, right }: { left: IndexExpr | VariableExpr | DerefExpr | DotExpr; operator: Token; right: Expr }): AssignExpr {
   return {
     kind: NodeKind.ASSIGN_EXPR,
     operator,
@@ -119,6 +122,24 @@ export function derefExpr({ operator, value }: { operator: Token; value: Expr })
     kind: NodeKind.DEREF_EXPR,
     operator,
     value,
+    resolvedType: null
+  }
+}
+
+export interface DotExpr extends Node {
+  kind: NodeKind.DOT_EXPR
+  callee: Expr
+  dot: Token
+  identifier: Token
+  resolvedType: Type | null // filled in by resolver pass
+}
+
+export function dotExpr({ callee, dot, identifier }: { callee: Expr; dot: Token; identifier: Token }): DotExpr {
+  return {
+    kind: NodeKind.DOT_EXPR,
+    callee,
+    dot,
+    identifier,
     resolvedType: null
   }
 }
@@ -293,6 +314,7 @@ export enum TypeCategory {
   FLOAT,
   INT,
   POINTER,
+  STRUCT,
   VOID
 }
 
@@ -336,6 +358,28 @@ export function arrayType(elementType: Type, length: number): ArrayType {
   }
 }
 
+export interface StructType {
+  category: TypeCategory.STRUCT
+  name: Token
+  resolvedStruct: StructStmt | null // filled in by resolver
+}
+
+export function unresolvedStructType(name: Token): StructType {
+  return {
+    category: TypeCategory.STRUCT,
+    name,
+    resolvedStruct: null
+  }
+}
+
+export function resolvedStructType(struct: StructStmt): StructType {
+  return {
+    category: TypeCategory.STRUCT,
+    name: struct.name,
+    resolvedStruct: struct
+  }
+}
+
 export interface PointerType {
   category: TypeCategory.POINTER
   elementType: Type
@@ -348,11 +392,20 @@ export function ptrType(elementType: Type): PointerType {
   }
 }
 
-export type Type = ArrayType | PointerType | SimpleType | typeof ErrorType | typeof VoidType
+export type Type = ArrayType | PointerType | SimpleType | StructType | typeof ErrorType | typeof VoidType
 
 export function isEqual(a: Type, b: Type): boolean {
   if (a.category === TypeCategory.ARRAY && b.category === TypeCategory.ARRAY) {
     return isEqual(a.elementType, b.elementType) && a.length === b.length
+  }
+  if (a.category === TypeCategory.STRUCT && b.category === TypeCategory.STRUCT) {
+    if (a.resolvedStruct === null) {
+      throw new Error(`Attempting to compare an unresolved type ${a.name.lexeme}`)
+    }
+    if (b.resolvedStruct === null) {
+      throw new Error(`Attempting to compare an unresolved type ${b.name.lexeme}`)
+    }
+    return a.resolvedStruct === b.resolvedStruct
   }
   if (a.category === TypeCategory.POINTER && b.category === TypeCategory.POINTER) {
     return isEqual(a.elementType, b.elementType)
@@ -364,7 +417,7 @@ export function isValidElementType(t: Type): boolean {
   if (isEqual(t, ErrorType)) {
     return true
   }
-  return sizeof(t) > 0
+  return !isEqual(t, VoidType)
 }
 
 export function sizeof(t: Type): number {
@@ -372,9 +425,18 @@ export function sizeof(t: Type): number {
     case TypeCategory.ARRAY: {
       return sizeof(t.elementType) * t.length
     }
-    case TypeCategory.POINTER: {
-      return sizeof(t.elementType)
+    case TypeCategory.STRUCT: {
+      let size = 0
+      if (t.resolvedStruct) {
+        t.resolvedStruct.members.forEach((member) => {
+          size += sizeof(member.type)
+        })
+      } else {
+        throw new Error("Cannot compute sizeof unresolved struct type")
+      }
+      return size
     }
+    case TypeCategory.POINTER:
     case TypeCategory.INT:
     case TypeCategory.FLOAT: {
       return 4
@@ -396,6 +458,7 @@ export function isScalar(t: Type): boolean {
   switch (t.category) {
     case TypeCategory.ARRAY:
     case TypeCategory.ERROR:
+    case TypeCategory.STRUCT:
     case TypeCategory.VOID: {
       return false
     }
@@ -415,6 +478,7 @@ export function isNumeric(t: Type): boolean {
     case TypeCategory.BOOL:
     case TypeCategory.ERROR:
     case TypeCategory.POINTER:
+    case TypeCategory.STRUCT:
     case TypeCategory.VOID: {
       return false
     }
@@ -455,14 +519,16 @@ export function canCoerce(from: Type, to: Type): boolean {
   switch (from.category) {
     case TypeCategory.ARRAY:
     case TypeCategory.VOID:
-    case TypeCategory.POINTER: {
+    case TypeCategory.POINTER:
+    case TypeCategory.STRUCT: {
       return false
     }
   }
   switch (to.category) {
     case TypeCategory.ARRAY:
     case TypeCategory.VOID:
-    case TypeCategory.POINTER: {
+    case TypeCategory.POINTER:
+    case TypeCategory.STRUCT: {
       return false
     }
   }
@@ -495,6 +561,7 @@ export function canCoerce(from: Type, to: Type): boolean {
           return false
         }
         case TypeCategory.BOOL: {
+          // TODO: Maybe disallow me
           return true
         }
       }
@@ -531,7 +598,17 @@ export function canCoerce(from: Type, to: Type): boolean {
         }
       }
     }
+    default: {
+      assertUnreachable(from)
+    }
   }
+}
+
+export function isNumberLiteral(node: Node): boolean {
+  if (node.kind !== NodeKind.LITERAL_EXPR) {
+    return false
+  }
+  return isNumeric((node as LiteralExpr).type)
 }
 
 export function canCoerceNumberLiteral(value: number, to: Type): boolean {
@@ -585,7 +662,7 @@ export interface Param {
 }
 
 export type Stmt = BlockStmt | ExpressionStmt | IfStmt | LoopControlStmt | PrintStmt | ReturnStmt | VarStmt | WhileStmt
-export type TopStmt = FunctionStmt | VarStmt
+export type TopStmt = FunctionStmt | StructStmt | VarStmt
 
 export interface BlockStmt extends Node {
   kind: NodeKind.BLOCK_STMT
@@ -717,6 +794,24 @@ export function returnStmt({ keyword, value }: { keyword: Token; value: Expr | n
   }
 }
 
+export interface StructStmt extends Node {
+  kind: NodeKind.STRUCT_STMT
+  name: Token
+  members: Param[]
+  symbol: StructSymbol | null // filled in by parser
+  isLiveAtEnd: boolean | null // filled in by resolver pass
+}
+
+export function structStmt({ name, members }: { name: Token; members: Param[] }): StructStmt {
+  return {
+    kind: NodeKind.STRUCT_STMT,
+    name,
+    members,
+    symbol: null,
+    isLiveAtEnd: null,
+  }
+}
+
 export interface VarStmt extends Node {
   kind: NodeKind.VAR_STMT
   name: Token
@@ -758,10 +853,11 @@ export function whileStmt({ expression, body, increment }: { expression: Expr; b
 export enum SymbolKind {
   VARIABLE,
   FUNCTION,
-  PARAM
+  PARAM,
+  STRUCT
 }
 
-export type Symbol = VariableSymbol | FunctionSymbol | ParamSymbol
+export type Symbol = VariableSymbol | FunctionSymbol | ParamSymbol | StructSymbol
 
 export interface VariableSymbol {
   kind: SymbolKind.VARIABLE
@@ -782,6 +878,12 @@ export interface ParamSymbol {
   param: Param
   id: number
   isAddressTaken: boolean
+}
+
+export interface StructSymbol {
+  kind: SymbolKind.STRUCT
+  node: StructStmt
+  id: number
 }
 
 export class Scope {
@@ -862,6 +964,14 @@ export class Context {
       isAddressTaken: false
     }
   }
+
+  structSymbol(node: StructStmt): StructSymbol {
+    return {
+      kind: SymbolKind.STRUCT,
+      node,
+      id: this.nextID++
+    }
+  }
 }
 
 function typeToSExpr(type: Type): string {
@@ -871,6 +981,21 @@ function typeToSExpr(type: Type): string {
     }
     case TypeCategory.POINTER: {
       return `(ptr ${typeToSExpr(type.elementType)})`
+    }
+    case TypeCategory.STRUCT: {
+      let out = "("
+      out += "struct "
+      out += "("
+      if (type.resolvedStruct) {
+        type.resolvedStruct.members.forEach((member) => {
+          out += `(${member.name.lexeme} ${typeToSExpr(member.type)})`
+        })
+      } else {
+        out += `unresolved '${type.name.lexeme}'`
+      }
+      out += ")"
+      out += ")"
+      return out
     }
     case TypeCategory.ERROR: {
       return "<error-type>"
@@ -892,6 +1017,9 @@ export function typeToString(type: Type): string {
     }
     case TypeCategory.POINTER: {
       return `${typeToString(type.elementType)}~`
+    }
+    case TypeCategory.STRUCT: {
+      return `${type.name.lexeme}`
     }
     case TypeCategory.ERROR: {
       return "<error-type>"
@@ -948,6 +1076,11 @@ export function astToSExpr(node: Node): string {
     case NodeKind.DEREF_EXPR: {
       const op = node as DerefExpr
       out += `(deref ${astToSExpr(op.value)})`
+      break
+    }
+    case NodeKind.DOT_EXPR: {
+      const op = node as DotExpr
+      out += `(. ${astToSExpr(op.callee)} ${op.identifier.lexeme})`
       break
     }
     case NodeKind.GROUP_EXPR: {
@@ -1076,6 +1209,18 @@ export function astToSExpr(node: Node): string {
       const op = node as ReturnStmt
       out += "("
       out += `return ${op.value !== null ? astToSExpr(op.value) : "void"}`
+      out += ")"
+      break
+    }
+    case NodeKind.STRUCT_STMT: {
+      const op = node as StructStmt
+      out += "("
+      out += `struct ${op.name.lexeme} `
+      out += "("
+      op.members.forEach((member) => {
+        out += `(${member.name.lexeme} ${typeToSExpr(member.type)})`
+      })
+      out += ")"
       out += ")"
       break
     }

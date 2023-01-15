@@ -13,7 +13,7 @@ function fakeToken(type: TokenType, lexeme: string): Token {
 // 2. Determine dependencies of global symbols
 // 3. Match `return` statements to enclosing functions
 // 4. Check arity of function calls
-// 5. Ensure no cyclic variable declarations
+// 5. Ensure no cyclic variable or type declarations
 export function resolve(context: ast.Context, reportError: ReportError) {
   const global = context.global
   let scopes = [global]
@@ -85,7 +85,9 @@ export function resolve(context: ast.Context, reportError: ReportError) {
     let out = node
     resolveNode(node, isLiveAtEnd)
     if (!ast.isEqual(node.resolvedType!, type)) {
-      if (ast.canCoerce(node.resolvedType!, type) || (node.kind === ast.NodeKind.LITERAL_EXPR && ast.canCoerceNumberLiteral(node.value, type))) {
+      const canCoerce = ast.canCoerce(node.resolvedType!, type) ||
+        (ast.isNumberLiteral(node) && ast.canCoerceNumberLiteral((node as ast.LiteralExpr).value, type))
+      if (canCoerce) {
         out = ast.castExpr({
           token: fakeToken(TokenType.EOF, ""),
           type,
@@ -228,21 +230,29 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           const symbol = callee.resolvedSymbol
           if (!symbol) {
             // We already reported 'Undefined symbol' error earlier when resolving the callee VariableExpr
-          } else if (symbol.kind !== ast.SymbolKind.FUNCTION) {
-            resolveError(callee.name, `Cannot call this type.`)
-          } else {
-            const fn = symbol as ast.FunctionSymbol
+          } else if (
+              (symbol.kind === ast.SymbolKind.FUNCTION && op.paren.lexeme === '(') ||
+              (symbol.kind === ast.SymbolKind.STRUCT && op.paren.lexeme === '{')
+          ) {
+            const fn = symbol
+            const params = fn.kind === ast.SymbolKind.FUNCTION ? fn.node.params : fn.node.members
             // Check arity and types of arguments
-            if (op.args.length !== fn.node.params.length) {
-              resolveError(op.paren, `Expected ${fn.node.params.length} arguments but got ${op.args.length} in call to ${fn.node.name.lexeme}.`)
+            if (op.args.length !== params.length) {
+              resolveError(op.paren, `Expected ${params.length} arguments but got ${op.args.length} in call to ${fn.node.name.lexeme}.`)
             } else {
               for (let i = 0; i < op.args.length; i++) {
-                const param = fn.node.params[i]
+                const param = params[i]
                 op.args[i] = resolveNodeWithCoercion(op.args[i], isLiveAtEnd, param.type, op.paren)
-                const arg = op.args[i]
               }
             }
-            op.resolvedType = fn.node.returnType
+            if (fn.kind === ast.SymbolKind.FUNCTION) {
+              op.resolvedType = fn.node.returnType
+            } else {
+              op.resolvedType = ast.resolvedStructType(fn.node)
+            }
+          } else {
+            const callMode = op.paren.lexeme === '{' ? 'construct' : 'call'
+            resolveError(callee.name, `Cannot ${callMode} this type.`)
           }
         }
         op.resolvedType = op.resolvedType ?? ast.ErrorType
@@ -267,6 +277,29 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             resolveError(op.operator, `Invalid operand for dereferencing operator '~'.`)
           }
           op.resolvedType = ast.ErrorType
+        }
+        break
+      }
+      case ast.NodeKind.DOT_EXPR: {
+        const op = node as ast.DotExpr
+        resolveNode(op.callee, isLiveAtEnd)
+        if (op.callee.resolvedType?.category !== ast.TypeCategory.STRUCT) {
+          if (!ast.isEqual(op.callee.resolvedType!, ast.ErrorType)) {
+            resolveError(op.dot, `Invalid operand for member access operator '.'.`)
+          }
+          op.resolvedType = ast.ErrorType
+        } else {
+          const struct = op.callee.resolvedType.resolvedStruct
+          for (const member of struct?.members ?? []) {
+            if (member.name.lexeme === op.identifier.lexeme) {
+              op.resolvedType = member.type
+              break
+            }
+          }
+          if (op.resolvedType === null) {
+            resolveError(op.identifier, `Struct ${struct?.name.lexeme} has no member '${op.identifier.lexeme}'.`)
+            op.resolvedType = ast.ErrorType
+          }
         }
         break
       }
@@ -430,13 +463,16 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.VARIABLE_EXPR: {
         const op = node as ast.VariableExpr
         const symbol = peekScope().lookup(op.name.lexeme, (sym) => {
-          if (sym.kind === ast.SymbolKind.PARAM) {
-            return true
-          } else if (sym.kind === ast.SymbolKind.FUNCTION) {
-            return true
-          } else {
-            const varSym = sym as ast.VariableSymbol
-            return visited.has(varSym.node) || varSym.isGlobal
+          switch (sym.kind) {
+            case ast.SymbolKind.PARAM:
+            case ast.SymbolKind.FUNCTION:
+            case ast.SymbolKind.STRUCT: {
+              return true
+            }
+            case ast.SymbolKind.VARIABLE: {
+              const varSym = sym as ast.VariableSymbol
+              return visited.has(varSym.node) || varSym.isGlobal
+            }
           }
         })
         if (symbol === null) {
@@ -447,12 +483,13 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           let resolveTypeFromSymbol = true
 
           const fnSymbol = symbol?.kind === ast.SymbolKind.FUNCTION ? symbol as ast.FunctionSymbol : null
+          const structSymbol = symbol?.kind === ast.SymbolKind.STRUCT ? symbol as ast.StructSymbol : null
           const varSymbol = symbol?.kind === ast.SymbolKind.VARIABLE ? symbol as ast.VariableSymbol : null
-          const symbolDecl = fnSymbol?.node ?? varSymbol?.node
+          const symbolDecl = fnSymbol?.node ?? structSymbol?.node ?? varSymbol?.node
 
           if (symbolDecl && !visited.has(symbolDecl)) {
             // Globals can be declared and used out-of-order.
-            const isGlobal = fnSymbol !== null || (varSymbol !== null && varSymbol.isGlobal)
+            const isGlobal = fnSymbol || structSymbol || (varSymbol !== null && varSymbol.isGlobal)
             // `lookup` should've filtered out un-visited locals
             console.assert(isGlobal)
             // Resolve the out-of-order global declaration. This is needed to:
@@ -468,6 +505,8 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             scopes = oldScopes
             functionStack = oldFunctionStack
           } else if (symbolDecl && walkedSet.has(symbolDecl)) {
+            // assert: struct definitions should never lead to constructor calls (struct defs never contain expressions).
+            console.assert(symbolDecl.kind !== ast.NodeKind.STRUCT_STMT)
             // Detect cyclic variable declarations (declarations using this variable expr in initializer).
             // Note `symbolDecl` may not be the cylic variable in the following case:
             // V1 -----> F1 -----> V2
@@ -495,7 +534,8 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           }
           if (resolveTypeFromSymbol) {
             switch (symbol.kind) {
-              case ast.SymbolKind.FUNCTION: {
+              case ast.SymbolKind.FUNCTION:
+              case ast.SymbolKind.STRUCT: {
                 // TODO: Either make `CallExpr` only use names and not sub-expressions, or add a function type
                 op.resolvedType = ast.VoidType
                 break
@@ -547,8 +587,13 @@ export function resolve(context: ast.Context, reportError: ReportError) {
 
         pushScope(op.scope)
         pushFunction(op)
-        // 1. Ensure all return statements match the return type of the function
-        // 2. If the function has a return type, ensure all control paths return a value
+        // 1. Resolve parameter and return types
+        op.params.forEach((param) => {
+          param.type = resolveType(param.type)
+        })
+        op.returnType = resolveType(op.returnType)
+        // 2. Ensure all return statements match the return type of the function
+        // 3. If the function has a return type, ensure all control paths return a value
         let missingReturn = false
         if (op.body.length > 0) {
           let prevIsLiveAtEnd = true // functions start as live
@@ -557,14 +602,12 @@ export function resolve(context: ast.Context, reportError: ReportError) {
             prevIsLiveAtEnd = !!op.body[i].isLiveAtEnd
           }
           if (op.body[op.body.length - 1].isLiveAtEnd) {
-            if (!ast.isEqual(op.returnType, ast.VoidType)) {
-              missingReturn = true
-            }
+            missingReturn = true
           }
-        } else if (!ast.isEqual(op.returnType, ast.VoidType)) {
+        } else {
           missingReturn = true
         }
-        if (missingReturn) {
+        if (missingReturn && !ast.isEqual(op.returnType, ast.VoidType) && !ast.isEqual(op.returnType, ast.ErrorType)) {
           resolveError(
             op.name,
             `All control paths for ${op.name.lexeme} must return a value of type '${ast.typeToString(op.returnType)}'.`
@@ -626,6 +669,14 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         op.isLiveAtEnd = false
         break
       }
+      case ast.NodeKind.STRUCT_STMT: {
+        const op = node as ast.StructStmt
+        op.members.forEach((member) => {
+          member.type = resolveType(member.type)
+        })
+        op.isLiveAtEnd = isLiveAtEnd
+        break
+      }
       case ast.NodeKind.VAR_STMT: {
         const op = node as ast.VarStmt
         resolveNode(op.initializer, isLiveAtEnd)
@@ -635,12 +686,16 @@ export function resolve(context: ast.Context, reportError: ReportError) {
         }
         if (op.type === null) {
           op.type = op.initializer.resolvedType!
-        } else if (!ast.isEqual(op.type, op.initializer.resolvedType!) && !ast.isEqual(op.initializer.resolvedType!, ast.ErrorType)) {
-          // TODO: allow implicit conversions when possible
-          resolveError(
-            op.name,
-            `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
-          )
+        } else {
+          op.type = resolveType(op.type)
+          if (!ast.isEqual(op.type, op.initializer.resolvedType!)) {
+            if (!ast.isEqual(op.initializer.resolvedType!, ast.ErrorType) && !ast.isEqual(op.type!, ast.ErrorType)) {
+              resolveError(
+                op.name,
+                `Cannot assign value of type '${ast.typeToString(op.initializer.resolvedType!)}' to variable of type '${ast.typeToString(op.type)}'.`
+              )
+            }
+          }
         }
         const inFunction = peekFunction()
         if (inFunction && inFunction.scope !== peekScope() && op.symbol) {
@@ -672,6 +727,54 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       }
     }
     postVisit(node)
+  }
+
+  // Is called when visiting AST nodes with explicit type names, e.g. variable
+  // declarations, struct member declarations, function param/return type declarations.
+  // - Resolves any struct types s.t. they are tagged with associated struct declaration.
+  // - Detects cyclic type declarations (e.g. structs containing non-pointer members with own type).
+  //
+  // Returns a resolved type (can be the same object but mutated).
+  function resolveType(type: ast.Type, isForPointerElement: boolean = false): ast.Type {
+    switch (type.category) {
+      case ast.TypeCategory.ARRAY: {
+        type.elementType = resolveType(type.elementType)
+        return type
+      }
+      case ast.TypeCategory.STRUCT: {
+        const symbol = peekScope().lookup(type.name.lexeme, (_) => true)
+        if (symbol === null || symbol.kind !== ast.SymbolKind.STRUCT) {
+          resolveError(type.name, `Undefined typename '${type.name.lexeme}'.`)
+          return ast.ErrorType
+        } else {
+          if (!visited.has(symbol.node)) {
+            // Structs can be defined and used out-of-order.
+            // Resolve the out-of-order struct definition. This is needed to
+            // detect cyclic declarations in case this variable expression
+            // is part of a global's initializer.
+            resolveNode(symbol.node, true)
+          } else if (walkedSet.has(symbol.node) && !isForPointerElement) {
+            // We're resolving a struct definition with a member that (directly/indirectly) depends on itself.
+            // Note pointer element types can be 'cyclic'.
+            resolveError(type.name, `Cyclic member declaration for struct '${symbol.node.name.lexeme}'.`)
+          }
+          type.resolvedStruct = symbol.node
+          return type
+        }
+      }
+      case ast.TypeCategory.POINTER: {
+        type.elementType = resolveType(type.elementType, /* isForPointerElement */ true)
+        return type
+      }
+      case ast.TypeCategory.BOOL:
+      case ast.TypeCategory.BYTE:
+      case ast.TypeCategory.ERROR:
+      case ast.TypeCategory.FLOAT:
+      case ast.TypeCategory.INT:
+      case ast.TypeCategory.VOID: {
+        return type
+      }
+    }
   }
 
   context.topLevelStatements.forEach(stmt => {

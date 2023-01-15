@@ -56,7 +56,8 @@ function registerType(type: ast.Type): "i32" | "f32" {
     case ast.TypeCategory.BOOL:
     case ast.TypeCategory.BYTE:
     case ast.TypeCategory.INT:
-    case ast.TypeCategory.POINTER: {
+    case ast.TypeCategory.POINTER:
+    case ast.TypeCategory.STRUCT: {
       return "i32"
     }
     case ast.TypeCategory.FLOAT: {
@@ -622,6 +623,7 @@ export function emit(context: ast.Context): string {
               line(`global.get ${wasmId("__stack_ptr__")}`)
             }
           } else {
+            // TODO: handle constructor calls (e.g. SymbolKind.STRUCT)
             throw new Error("Unexpected callee")
           }
         } else {
@@ -747,6 +749,10 @@ export function emit(context: ast.Context): string {
             emitPushMem(elementType)
           }
         }
+        break
+      }
+      case ast.NodeKind.DOT_EXPR: {
+        throw new Error("Dot expressions not yet supported in codegen")
         break
       }
       case ast.NodeKind.GROUP_EXPR: {
@@ -1041,7 +1047,7 @@ export function emit(context: ast.Context): string {
 
             let localOffset = 0
             const allocateRegisterOrStackLoc = (local: ast.Symbol) => {
-              if (local.kind !== ast.SymbolKind.FUNCTION) {
+              if (local.kind !== ast.SymbolKind.FUNCTION && local.kind !== ast.SymbolKind.STRUCT) {
                 if (isVariableInRegister(local) && local.kind === ast.SymbolKind.VARIABLE) {
                   line(`(local ${wasmId(local.node.name.lexeme, local.id)} ${registerType(local.node.type!)})`)
                 } else {
@@ -1154,6 +1160,10 @@ export function emit(context: ast.Context): string {
         line(`local.get ${wasmId("__base_ptr__")}`)
         line(`global.set ${wasmId("__stack_ptr__")}`)
         line(`return`)
+        break
+      }
+      case ast.NodeKind.STRUCT_STMT: {
+        throw new Error("Struct statements not yet supported in codegen")
         break
       }
       case ast.NodeKind.VAR_STMT: {

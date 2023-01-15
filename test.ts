@@ -193,20 +193,18 @@ describe("parser", () => {
     expectParseErrors(`
     def foo {}
     def foo() void {}
-    def foo() blabla {}
     def foo(a, b) {}
     def foo(a int, b int) int;
     def foo(a int, b int) int {}
-    def foo(a int, b int) int {
+    def foo2(a int, b int) int {
       print 3.14159265358979626;
     `,
     [
       "1: Expect '(' after function name.",
       "2: Invalid type specifier starting at 'void'.",
-      "3: Invalid type specifier starting at 'blabla'.",
-      "4: Invalid type specifier starting at ','.",
-      "5: Expect '{' before function body.",
-      "8: Expect '}' after block."
+      "3: Invalid type specifier starting at ','.",
+      "4: Expect '{' before function body.",
+      "7: Expect '}' after block."
     ])
 
     // If we ever add nested functions, can remove this test
@@ -358,7 +356,7 @@ describe("parser", () => {
       var a += 0;
       var 0 = 0;
       var a int;
-      var a notatype = 0;
+      var a 1 = 0;
       var a int = 0; // ok
       var b = 0; // ok
     }
@@ -367,7 +365,7 @@ describe("parser", () => {
       "2: Invalid type specifier starting at '+='.",
       "3: Expect identifier after 'var'.",
       "4: Expect '=' after variable declaration.",
-      "5: Invalid type specifier starting at 'notatype'.",
+      "5: Invalid type specifier starting at '1'.",
     ])
   })
 
@@ -390,6 +388,41 @@ describe("parser", () => {
     [
       "2: Invalid character literal (use double quotes for strings).",
       "3: Invalid character literal (only ASCII characters allowed)."
+    ])
+  })
+
+  test("Struct statements", () => {
+    expectParseErrors(`
+    struct Point { x float, y float }
+    struct Point { x int, y int } // error!
+    struct Point2 { x int, y int }
+
+    struct Semicolons { x int; } // error!
+    struct NoBody; // error!
+    struct DuplicateMember { x int, y int, y int } // error!
+    struct BadBody {
+      def foo() {} // error!
+    }
+
+    def FunctionStructCollision() {}
+    struct FunctionStructCollision { x int, y int } // error!
+
+    struct Empty {} // ok
+
+    def main() {
+      struct Vector { x float, y float } // error!
+      print "synchronize";
+    }
+    `,
+    [
+      "2: 'Point' is already declared in this scope.",
+      "5: Missing comma after member.",
+      "5: Only variable declarations and function definitions allowed at the top-level.",
+      "6: Expect '{' after struct name.",
+      "7: 'y' is already declared in member list.",
+      "9: Expect identifier.",
+      "13: 'FunctionStructCollision' is already declared in this scope.",
+      "18: Expect expression.",
     ])
   })
 })
@@ -1311,6 +1344,220 @@ describe("type checking", () => {
       "2: Cannot break outside a loop.",
       "3: Cannot continue outside a loop.",
       "7: Cannot break outside a loop.",
+    ])
+  })
+
+  test("structs: constructor and member access type inference", () => {
+    expectResolveErrors(`
+    def main() {
+      var p = Point{1, 2}; // ok
+      var t = Ticket{1, 'a', true}; // ok
+      p.x = true; // error
+      p.x = 3.14; // ok
+      var f float = p.y; // ok
+      var bl bool = p.y; // error
+      t.id = false; // error
+      t.id = 42; // ok
+      t.group = [3.14]; // error
+      t.group = 'b'; // ok
+      t.isDeluxe = [3.14]; // error
+      t.isDeluxe = false; // ok
+    }
+    struct Point { x float, y float }
+    struct Ticket { id int, group byte, isDeluxe bool }
+    `,
+    [
+      "4: Cannot implicitly convert operand to 'float'.",
+      "7: Cannot assign value of type 'float' to variable of type 'bool'.",
+      "8: Cannot implicitly convert operand to 'int'.",
+      "10: Cannot implicitly convert operand to 'byte'.",
+      "12: Cannot implicitly convert operand to 'bool'.",
+    ])
+  })
+
+  test("structs: accessing invalid members", () => {
+    expectResolveErrors(`
+    def main() {
+      var t = Ticket{1, 'a', true}; // ok
+      print t.id; // ok
+      print t.group; // ok
+      print t.isDeluxe; // ok
+      print t.doesNotExist; // error!
+    }
+    struct Ticket { id int, group byte, isDeluxe bool }
+    `,
+    [
+      "6: Struct Ticket has no member 'doesNotExist'.",
+    ])
+  })
+
+  test("structs: constructor arity and arg checking", () => {
+    expectResolveErrors(`
+    def main() {
+      var t1 = Ticket{1, 'a', true}; // ok
+      var t2 = Ticket{1, 'a'}; // error!
+      var t3 = Ticket{[3.14], [5.6], ['t']}; // error!
+      var t4 = Ticket{1, 'a', true, true}; // error!
+    }
+    struct Ticket { id int, group byte, isDeluxe bool }
+    `,
+    [
+      "3: Expected 3 arguments but got 2 in call to Ticket.",
+      "4: Cannot implicitly convert operand to 'int'.",
+      "4: Cannot implicitly convert operand to 'byte'.",
+      "4: Cannot implicitly convert operand to 'bool'.",
+      "5: Expected 3 arguments but got 4 in call to Ticket.",
+    ])
+  })
+
+  test("structs: nominal variable type annotations", () => {
+    expectResolveErrors(`
+    def main() {
+      var p Point = Point{1, 2}; // ok
+      var x Vector = Point{1, 2}; // error!
+      var y Point = 1; // error!
+      var v Vector = Vector{1, 2}; // ok
+    }
+    struct Point { x float, y float }
+    struct Vector { x float, y float }
+    `,
+    [
+      "3: Cannot assign value of type 'Point' to variable of type 'Vector'.",
+      "4: Cannot assign value of type 'int' to variable of type 'Point'.",
+    ])
+  })
+
+  test("structs: nominal parameter, member, and return types", () => {
+    expectResolveErrors(`
+    def bad1(p Point) Point {
+      return -1; // error!
+    }
+    def bad2(p Point) Vector {
+      return p; // error!
+    }
+    def bad3(p Point) Vector {
+      return Point{1, 2}; // error!
+    }
+    def point2Vec(p Point) Vector {
+      return Vector{p.x, p.y}; // ok
+    }
+    def add(a Point, b Point) Point {
+      return Point{a.x + b.x, a.y + b.y}; // ok
+    }
+    def main() {
+      var v = point2Vec(Point{1, 2}); // ok
+      var x1 = add(1, 2); // error!
+      var x2 = add(Vector{1, 2}, Vector{3, 4}); // error!
+      var y Point = point2Vec(Point{1, 2}); // error!
+      var p = add(Point{1, 2}, Point{3, 4}); // ok
+    }
+    struct Point { x float, y float }
+    struct Vector { x float, y float }
+    `,
+    [
+      "2: Expected a value of type 'Point'.",
+      "5: Expected a value of type 'Vector'.",
+      "8: Expected a value of type 'Vector'.",
+      "18: Cannot implicitly convert operand to 'Point'.",
+      "18: Cannot implicitly convert operand to 'Point'.",
+      "19: Cannot implicitly convert operand to 'Point'.",
+      "19: Cannot implicitly convert operand to 'Point'.",
+      "20: Cannot assign value of type 'Vector' to variable of type 'Point'.",
+    ])
+  })
+
+  test("structs: incomplete/undefined type names", () => {
+    expectResolveErrors(`
+    struct ContainsUndefined {
+      val Undefined // error!
+    }
+    def foo(x Undefined) { // error!
+      print "hello";
+    }
+    def bar() Undefined {} // error!
+    def main() {
+      var x Undefined = bar(); // error!
+      var y = Undefined{}; // error!
+    }
+    `,
+    [
+      "2: Undefined typename 'Undefined'.",
+      "4: Undefined typename 'Undefined'.",
+      "7: Undefined typename 'Undefined'.",
+      "9: Undefined typename 'Undefined'.",
+      "10: Undefined symbol 'Undefined'.",
+    ])
+  })
+
+  test("structs: invalid nominal type annotations", () => {
+    expectResolveErrors(`
+    var isAGlobalVar = 42;
+    struct ContainsInvalid {
+      val isAFunction, // error!
+      val2 isAGlobalVar // error!
+    }
+    def isAFunction(x int) int {
+      return 1337;
+    }
+    def badParamType(x isAFunction) { // error!
+      print "hi";
+    }
+    def main() {
+      var badVarType isAFunction = isAFunction(1); // error!
+      var badVarType2 isAGlobalVar = isAGlobalVar; // error!
+      var x = isAGlobalVar; // ok
+      var y = isAFunction(1); // ok
+    }
+    `,
+    [
+      "3: Undefined typename 'isAFunction'.",
+      "4: Undefined typename 'isAGlobalVar'.",
+      "9: Undefined typename 'isAFunction'.",
+      "13: Undefined typename 'isAFunction'.",
+      "14: Undefined typename 'isAGlobalVar'.",
+    ])
+  })
+
+  test("structs: constructor vs function calls", () => {
+    expectResolveErrors(`
+    struct Point { x float, y float }
+    def isAFunction(x int) int {
+      return 1337;
+    }
+    def main() {
+      var bad1 = isAFunction{1}; // error!
+      var bad2 = Point(1, 2); // error!
+      var x = Point{1, 2}; // ok
+    }
+    `,
+    [
+      "6: Cannot construct this type.",
+      "7: Cannot call this type.",
+    ])
+  })
+
+  test("structs: cyclic struct definitions", () => {
+    expectResolveErrors(`
+    struct BadList {
+      next BadList, // error!
+      val int
+    }
+    struct GoodList {
+      next GoodList~, // ok
+      val int
+    }
+    struct Bad1 {
+      child Bad2, // error!
+      val int
+    }
+    struct Bad2 {
+      child Bad1, // error!
+      val int
+    }
+    `,
+    [
+      "2: Cyclic member declaration for struct 'BadList'.",
+      "14: Cyclic member declaration for struct 'Bad1'.",
     ])
   })
 })
@@ -2447,4 +2694,82 @@ done
 done
 `.trim() + "\n")
   })
+
+  /*
+  test("structs: struct-type members of structs", async () => {
+    await expectOutput(`
+    struct Point { x float, y float }
+    struct Line { a Point, b Point }
+    def dist(p Point) float {
+      return sqrt(p.x * p.x + p.y * p.y);
+    }
+    def length(l Line) float {
+      return dist(Point{l.a.x - l.b.x, l.a.y - l.b.y});
+    }
+    def main() {
+      print dist(Line{Point{1, 2}, Point{3, 4}}); // 2.82842712475
+    }
+    `,
+    `
+2.82842712475
+`.trim() + "\n")
+  })
+
+  test("structs: arrays of structs", async () => {
+    await expectOutput(`
+    def avg(arr [Point; 4]) Point {
+      var out = Point{0, 0};
+      for (var i = 0; i < len(arr); i += 1) {
+        out.x += arr[i].x;
+        out.y += arr[i].y;
+      }
+      out.x /= len(arr);
+      out.y /= len(arr);
+      return out;
+    }
+    def main() {
+      var pointCloud = [Point{0, 0}, Point{1, 0}, Point{1, 1}, Point{0, 1}];
+      var center = avg(pointCloud); // 0.5, 0.5
+      print center.x;
+      print center.y;
+    }
+    struct Point {x float, y float }
+    `,
+    `
+0.5
+0.5
+`.trim() + "\n")
+  })
+
+  test("structs: array members of structs", async () => {
+    await expectOutput(`
+    def ctr(q Quad) Point {
+      var out = Point{0, 0};
+      for (var i = 0; i < len(q.corners); i += 1) {
+        out.x += q.corners[i].x;
+        out.y += q.corners[i].y;
+      }
+      out.x /= len(q.corners);
+      out.y /= len(q.corners);
+      return out;
+    }
+    def main() {
+      var q = Quad{[Point{0, 0}, Point{1, 0}, Point{1, 1}, Point{0, 1}]};
+      var center = avg(q); // 0.5, 0.5
+      print center.x;
+      print center.y;
+    }
+    struct Quad {
+      corners [Point; 4]
+    }
+    struct Point {x float, y float }
+    `,
+    `
+0.5
+0.5
+`.trim() + "\n")
+  })
+  */
 })
+
+// TODO: string literals with non-ascii UTF-8 chars

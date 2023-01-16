@@ -1,4 +1,4 @@
-import { Token } from './scanner'
+import { fakeToken, Token } from './scanner'
 import { TokenType } from './tokens'
 import { assertUnreachable } from './util'
 
@@ -698,8 +698,10 @@ export interface FunctionStmt extends Node {
   name: Token
   params: Param[]
   returnType: Type
-  body: Stmt[]
-  scope: Scope
+  body: {
+    block: Stmt[]
+    scope: Scope
+  } | null // "null" means the function is imported or built-in
   symbol: FunctionSymbol | null // filled in by parser
   // After resolve pass, `hoistedLocals` should contain
   // all local variables declared in descendant scopes
@@ -709,11 +711,11 @@ export interface FunctionStmt extends Node {
 }
 
 export function functionStmt(
-  { name, params, returnType, body, scope, symbol }: {
+  { name, params, returnType, block, scope, symbol }: {
     name: Token;
     params: Param[];
     returnType: Type;
-    body: Stmt[];
+    block: Stmt[];
     scope: Scope;
     symbol: FunctionSymbol | null
 }): FunctionStmt {
@@ -722,8 +724,28 @@ export function functionStmt(
     name,
     params,
     returnType,
-    body,
-    scope,
+    body: {
+      block,
+      scope
+    },
+    symbol,
+    hoistedLocals: null
+  }
+}
+
+export function importedFunctionStmt(
+  { name, params, returnType, symbol }: {
+    name: Token;
+    params: Param[];
+    returnType: Type;
+    symbol: FunctionSymbol | null
+}): FunctionStmt {
+  return {
+    kind: NodeKind.FUNCTION_STMT,
+    name,
+    params,
+    returnType,
+    body: null,
     symbol,
     hoistedLocals: null
   }
@@ -930,11 +952,43 @@ export class Context {
 
   private nextID: number = 0
 
-  constructor(global: Scope, topLevelStatements: TopStmt[]) {
-    this.global = global
+  constructor() {
+    this.global = new Scope(null)
     this.stringLiterals = new Map()
-    this.topLevelStatements = topLevelStatements
+    this.topLevelStatements = []
     this.globalInitOrder = null
+
+    // Define built-ins
+    const memcpy = importedFunctionStmt({
+      name: fakeToken(TokenType.IDENTIFIER, "__memcpy__"),
+      params: [
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "src"),
+          type: ptrType(ByteType)
+        },
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "dst"),
+          type: ptrType(ByteType)
+        }
+      ],
+      returnType: VoidType,
+      symbol: null
+    })
+    memcpy.symbol = this.functionSymbol(memcpy)
+    const sqrt = importedFunctionStmt({
+      name: fakeToken(TokenType.IDENTIFIER, "__sqrt__"),
+      params: [
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "x"),
+          type: FloatType
+        },
+      ],
+      returnType: FloatType,
+      symbol: null
+    })
+    sqrt.symbol = this.functionSymbol(sqrt)
+    this.global.define(memcpy.name.lexeme, memcpy.symbol)
+    this.global.define(sqrt.name.lexeme, sqrt.symbol)
   }
 
   variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol {
@@ -1174,7 +1228,7 @@ export function astToSExpr(node: Node): string {
       })
       out += ") "
       out += "("
-      op.body.forEach((stmt, i) => {
+      op.body?.block.forEach((stmt, i) => {
         if (i > 0) out += " "
         out += astToSExpr(stmt)
       })

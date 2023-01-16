@@ -460,7 +460,12 @@ export function emit(context: ast.Context): string {
             throw new Error("Cannot assign to function symbol")
           }
         } else {
-          // Assigning to an index or dereference expression, e.g. `(...)[i] = ...` or `(...)~ = ...`
+          // Assigning to an index, dot, or dereference expression, e.g.
+          // ```
+          // (...)[i] = ...;
+          // (...).a = ...;
+          // (...)~ = ...;
+          // ```
           const elementType = op.resolvedType!
 
           if (ast.isScalar(elementType)) {
@@ -622,8 +627,28 @@ export function emit(context: ast.Context): string {
               // return stack ptr
               line(`global.get ${wasmId("__stack_ptr__")}`)
             }
+          } else if (symbol?.kind === ast.SymbolKind.STRUCT) {
+            // Constructors are inlined
+            emitAllocStackVal(op.resolvedType!)
+            line(`global.get ${wasmId("__stack_ptr__")}`)
+            const struct = (op.resolvedType as ast.StructType).resolvedStruct!
+            let offset = 0
+            for (let i = 0; i < struct.members.length; i++) {
+              emitDupTop('i32')
+              line(`i32.const ${offset}`)
+              line(`i32.add`)
+              visit(op.args[i]) // returns scalar or address of non-scalar temporary
+              const member = struct.members[i]
+              if (ast.isScalar(member.type)) {
+                emitStoreScalar(member.type)
+              } else {
+                emitSwapTop("i32", "i32")
+                line(`i32.const ${ast.sizeof(member.type)}`)
+                line(`call ${wasmId("__memcpy__")}`)
+              }
+              offset += ast.sizeof(member.type)
+            }
           } else {
-            // TODO: handle constructor calls (e.g. SymbolKind.STRUCT)
             throw new Error("Unexpected callee")
           }
         } else {
@@ -752,7 +777,39 @@ export function emit(context: ast.Context): string {
         break
       }
       case ast.NodeKind.DOT_EXPR: {
-        throw new Error("Dot expressions not yet supported in codegen")
+        const op = node as ast.DotExpr
+        op.dot.lineStr(true).split("\n").forEach((l) => {
+          debugLine(`;; ${l}`)
+        })
+        debugLine(``)
+
+        const memberType = op.resolvedType
+        const structType = op.callee.resolvedType
+        if (structType?.category !== ast.TypeCategory.STRUCT) {
+          throw new Error("Unexpected callee type for dot expr")
+        } else {
+          visit(op.callee, ExprMode.LVALUE) // get address of struct start
+          let offset = 0
+          const struct = structType.resolvedStruct!
+          for (let i = 0; i < struct.members.length; i++) {
+            if (struct.members[i].name.lexeme === op.identifier.lexeme) {
+              break
+            }
+            offset += ast.sizeof(struct.members[i].type)
+          }
+          line(`i32.const ${offset}`)
+          line(`i32.add`)
+          if (exprMode === ExprMode.LVALUE) {
+            // done; address of member returned
+          } else {
+            // get value of member
+            if (ast.isScalar(memberType!)) {
+              emitLoadScalar(memberType!)
+            } else {
+              emitPushMem(memberType!)
+            }
+          }
+        }
         break
       }
       case ast.NodeKind.GROUP_EXPR: {
@@ -1001,15 +1058,19 @@ export function emit(context: ast.Context): string {
       }
       case ast.NodeKind.FUNCTION_STMT: {
         const op = node as ast.FunctionStmt
+        if (op.body === null) {
+          // Imported/built-in functions generate code separately
+          break
+        }
         localLocs = new Map()
         if (op.name.lexeme === "main") {
           line(`(func ${wasmId("main")} (export "main")`)
         } else {
           line(`(func ${wasmId(op.name.lexeme)}`)
         }
-        {
+        if (op.body) {
           indent()
-          op.scope.forEach((name, local) => {
+          op.body.scope.forEach((name, local) => {
             if (local.kind === ast.SymbolKind.PARAM) {
               line(`(param ${wasmId(name, local.id)} ${registerType(local.param.type)})`)
             }
@@ -1058,7 +1119,7 @@ export function emit(context: ast.Context): string {
                 }
               }
             }
-            op.scope.forEach((_, local) => allocateRegisterOrStackLoc(local))
+            op.body.scope.forEach((_, local) => allocateRegisterOrStackLoc(local))
             op.hoistedLocals?.forEach((local) => allocateRegisterOrStackLoc(local))
             line(`global.get ${wasmId("__stack_ptr__")}`)
             line(`local.set ${wasmId("__base_ptr__")}`)
@@ -1071,7 +1132,7 @@ export function emit(context: ast.Context): string {
 
           // Copy + push nonregister args to stack
           op.params.forEach((param) => {
-            const symbol = op.scope.lookup(param.name.lexeme, (_) => true) as ast.ParamSymbol
+            const symbol = op.body?.scope.lookup(param.name.lexeme, (_) => true) as ast.ParamSymbol
             if (symbol && !isVariableInRegister(symbol)) {
               line(`local.get ${wasmId(param.name.lexeme, symbol!.id)}`)
               emitSetSymbol(symbol)
@@ -1080,7 +1141,7 @@ export function emit(context: ast.Context): string {
             }
           })
 
-          op.body.forEach((statement) => {
+          op.body.block.forEach((statement) => {
             visit(statement)
           })
 
@@ -1163,7 +1224,8 @@ export function emit(context: ast.Context): string {
         break
       }
       case ast.NodeKind.STRUCT_STMT: {
-        throw new Error("Struct statements not yet supported in codegen")
+        // These don't generate any code. Constructors, assignment, comparisons, and
+        // member accesses are all inlined. If we ever add methods we will need to revisit.
         break
       }
       case ast.NodeKind.VAR_STMT: {
@@ -1329,6 +1391,14 @@ export function emit(context: ast.Context): string {
       }
       line(`)`)
       dedent()
+    }
+    line(`)`)
+
+    line(`(func ${wasmId("__sqrt__")} (param $x f32) (result f32)`)
+    {
+      // TODO: inline callsites?
+      line(`local.get $x`)
+      line(`f32.sqrt`)
     }
     line(`)`)
 

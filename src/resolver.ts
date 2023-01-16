@@ -585,36 +585,38 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.FUNCTION_STMT: {
         const op = node as ast.FunctionStmt
 
-        pushScope(op.scope)
-        pushFunction(op)
         // 1. Resolve parameter and return types
         op.params.forEach((param) => {
           param.type = resolveType(param.type)
         })
         op.returnType = resolveType(op.returnType)
-        // 2. Ensure all return statements match the return type of the function
-        // 3. If the function has a return type, ensure all control paths return a value
-        let missingReturn = false
-        if (op.body.length > 0) {
-          let prevIsLiveAtEnd = true // functions start as live
-          for (let i = 0; i < op.body.length; i++) {
-            resolveNode(op.body[i], prevIsLiveAtEnd)
-            prevIsLiveAtEnd = !!op.body[i].isLiveAtEnd
-          }
-          if (op.body[op.body.length - 1].isLiveAtEnd) {
+        if (op.body) {
+          pushScope(op.body.scope)
+          pushFunction(op)
+          // 2. Ensure all return statements match the return type of the function
+          // 3. If the function has a return type, ensure all control paths return a value
+          let missingReturn = false
+          if (op.body.block.length > 0) {
+            let prevIsLiveAtEnd = true // functions start as live
+            for (let i = 0; i < op.body.block.length; i++) {
+              resolveNode(op.body.block[i], prevIsLiveAtEnd)
+              prevIsLiveAtEnd = !!op.body.block[i].isLiveAtEnd
+            }
+            if (op.body.block[op.body.block.length - 1].isLiveAtEnd) {
+              missingReturn = true
+            }
+          } else {
             missingReturn = true
           }
-        } else {
-          missingReturn = true
+          if (missingReturn && !ast.isEqual(op.returnType, ast.VoidType) && !ast.isEqual(op.returnType, ast.ErrorType)) {
+            resolveError(
+              op.name,
+              `All control paths for ${op.name.lexeme} must return a value of type '${ast.typeToString(op.returnType)}'.`
+            )
+          }
+          popFunction()
+          popScope()
         }
-        if (missingReturn && !ast.isEqual(op.returnType, ast.VoidType) && !ast.isEqual(op.returnType, ast.ErrorType)) {
-          resolveError(
-            op.name,
-            `All control paths for ${op.name.lexeme} must return a value of type '${ast.typeToString(op.returnType)}'.`
-          )
-        }
-        popFunction()
-        popScope()
         break
       }
       case ast.NodeKind.IF_STMT: {
@@ -643,8 +645,10 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       case ast.NodeKind.PRINT_STMT: {
         const op = node as ast.PrintStmt
         resolveNode(op.expression, isLiveAtEnd)
-        if (ast.isEqual(op.expression.resolvedType!, ast.VoidType)) {
-          resolveError(op.keyword, `Cannot print value of type 'void'.`)
+        const valueType = op.expression.resolvedType
+        if (ast.isEqual(valueType!, ast.VoidType) || valueType?.category === ast.TypeCategory.POINTER || valueType?.category === ast.TypeCategory.STRUCT) {
+          // TODO: allow hex address printing for pointers
+          resolveError(op.keyword, `Cannot print value of type '${ast.typeToString(valueType!)}'.`)
         }
         op.isLiveAtEnd = isLiveAtEnd
         break
@@ -698,7 +702,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           }
         }
         const inFunction = peekFunction()
-        if (inFunction && inFunction.scope !== peekScope() && op.symbol) {
+        if (inFunction?.body && inFunction.body.scope !== peekScope() && op.symbol) {
           if (inFunction.hoistedLocals === null) {
             inFunction.hoistedLocals = new Set()
           }

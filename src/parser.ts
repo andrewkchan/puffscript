@@ -12,10 +12,8 @@ const codec = new UTF8Codec()
 // 3. Emplace symbol declarations into scopes
 // 4. Ensure no duplicate symbols in same scope
 export function parse(tokens: Token[], reportError: ReportError): ast.Context {
-  const topLevelStatements: ast.TopStmt[] = []
-  const global = new ast.Scope(null)
-  const context = new ast.Context(global, topLevelStatements)
-  const scopes = [global]
+  const context = new ast.Context()
+  const scopes = [context.global]
 
   function peekScope(): ast.Scope {
     return scopes[scopes.length - 1]
@@ -160,14 +158,14 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         scope.define(param.name.lexeme, context.paramSymbol(param))
       }
     })
-    const body = block()
+    const statements = block()
     const scope = popScope()
 
     const node = ast.functionStmt({
       name,
       params,
       returnType,
-      body,
+      block: statements,
       scope,
       symbol: null
     })
@@ -245,7 +243,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (scope.hasDirect(name.lexeme)) {
       parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
     } else {
-      const symbol = context.variableSymbol(node, scope === global)
+      const symbol = context.variableSymbol(node, scope === context.global)
       scope.define(name.lexeme, symbol)
       node.symbol = symbol
     }
@@ -469,12 +467,16 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   function exprAssignment(): ast.Expr {
-    let expr = exprOr()
+    const expr = exprOr()
+    const isValidAssignmentTarget =
+      expr.kind === ast.NodeKind.VARIABLE_EXPR ||
+      expr.kind === ast.NodeKind.INDEX_EXPR ||
+      expr.kind === ast.NodeKind.DEREF_EXPR ||
+      expr.kind === ast.NodeKind.DOT_EXPR
     if (match(TokenType.EQUAL)) {
       const operator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR ||
-          expr.kind === ast.NodeKind.DEREF_EXPR || expr.kind === ast.NodeKind.DOT_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator,
           left: expr,
@@ -489,7 +491,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else if (match(TokenType.PLUS_EQUAL)) {
       const combinedOperator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator: combinedOperator,
           left: expr,
@@ -504,7 +506,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else if (match(TokenType.MINUS_EQUAL)) {
       const combinedOperator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator: combinedOperator,
           left: expr,
@@ -519,7 +521,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else if (match(TokenType.STAR_EQUAL)) {
       const combinedOperator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator: combinedOperator,
           left: expr,
@@ -534,7 +536,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else if (match(TokenType.SLASH_EQUAL)) {
       const combinedOperator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator: combinedOperator,
           left: expr,
@@ -549,7 +551,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     } else if (match(TokenType.PERCENT_EQUAL)) {
       const combinedOperator = previous()
       const right = exprAssignment()
-      if (expr.kind === ast.NodeKind.VARIABLE_EXPR || expr.kind === ast.NodeKind.INDEX_EXPR || expr.kind === ast.NodeKind.DEREF_EXPR) {
+      if (isValidAssignmentTarget) {
         return ast.assignExpr({
           operator: combinedOperator,
           left: expr,
@@ -867,7 +869,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   while (!isAtEnd()) {
     try {
       const stmt = topDecl()
-      topLevelStatements.push(stmt)
+      context.topLevelStatements.push(stmt)
     } catch (e) {
       if (e instanceof ParseError) {
         synchronize()

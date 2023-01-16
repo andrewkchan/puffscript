@@ -1392,6 +1392,42 @@ describe("type checking", () => {
     ])
   })
 
+  test("structs: valid operands for dot operator", () => {
+    expectResolveErrors(`
+    def getTicket() Ticket {
+      return Ticket{1, 'a', true};
+    }
+    def getNum() int {
+      return 1;
+    }
+    def getArr() [int; 1] {
+      return [1];
+    }
+    def main() {
+      print Ticket{1, 'a', true}.id; // ok
+      print getTicket().id; // ok
+      print getNum().id; // error!
+      print getArr().id; // error!
+      print p.id; // error!
+      print p~.id; // ok
+      print g.t.id; // ok
+      print g.name; // ok
+      print g.name[0].id; // error!
+    }
+    var t = Ticket{999, 'b', true};
+    var p = &t;
+    var g = Passenger{ "jonathan", t };
+    struct Ticket { id int, group byte, isDeluxe bool }
+    struct Passenger { name [byte; 8], t Ticket }
+    `,
+    [
+      "13: Invalid operand for member access operator '.'.",
+      "14: Invalid operand for member access operator '.'.",
+      "15: Invalid operand for member access operator '.'.",
+      "19: Invalid operand for member access operator '.'.",
+    ])
+  })
+
   test("structs: constructor arity and arg checking", () => {
     expectResolveErrors(`
     def main() {
@@ -1561,6 +1597,23 @@ describe("type checking", () => {
       "14: Cyclic member declaration for struct 'Bad1'.",
     ])
   })
+
+  test("structs: nominal type comparisons", () => {
+    expectResolveErrors(`
+    def main() {
+      var p Point = Point{1, 2}; // ok
+      var v Vector = Vector{1, 2}; // ok
+      print p == Point{1, 2}; // ok
+      print p == p; // ok
+      print p == v; // err
+    }
+    struct Point { x float, y float }
+    struct Vector { x float, y float }
+    `,
+    [
+      "6: Cannot compare Point to Vector.",
+    ])
+  })
 })
 
 describe("end to end", () => {
@@ -1594,6 +1647,17 @@ describe("end to end", () => {
 -1430532899
 97
 hello world
+`.trim() + "\n")
+  })
+
+  test("builtin functions", async () => {
+    await expectOutput(`
+    def main() {
+      print __sqrt__(2);
+    }
+    `,
+    `
+1.4142135381698608
 `.trim() + "\n")
   })
 
@@ -2696,27 +2760,26 @@ done
 `.trim() + "\n")
   })
 
-  /*
-  test("structs: struct-type members of structs", async () => {
+  test("structs 1", async () => {
     await expectOutput(`
     struct Point { x float, y float }
     struct Line { a Point, b Point }
     def dist(p Point) float {
-      return sqrt(p.x * p.x + p.y * p.y);
+      return __sqrt__(p.x * p.x + p.y * p.y);
     }
     def length(l Line) float {
       return dist(Point{l.a.x - l.b.x, l.a.y - l.b.y});
     }
     def main() {
-      print dist(Line{Point{1, 2}, Point{3, 4}}); // 2.82842712475
+      print length(Line{Point{1, 2}, Point{3, 4}}); // 2.8284270763397217
     }
     `,
     `
-2.82842712475
+2.8284270763397217
 `.trim() + "\n")
   })
 
-  test("structs: arrays of structs", async () => {
+  test("structs 2", async () => {
     await expectOutput(`
     def avg(arr [Point; 4]) Point {
       var out = Point{0, 0};
@@ -2742,7 +2805,7 @@ done
 `.trim() + "\n")
   })
 
-  test("structs: array members of structs", async () => {
+  test("structs 3", async () => {
     await expectOutput(`
     def ctr(q Quad) Point {
       var out = Point{0, 0};
@@ -2756,7 +2819,7 @@ done
     }
     def main() {
       var q = Quad{[Point{0, 0}, Point{1, 0}, Point{1, 1}, Point{0, 1}]};
-      var center = avg(q); // 0.5, 0.5
+      var center = ctr(q); // 0.5, 0.5
       print center.x;
       print center.y;
     }
@@ -2770,7 +2833,48 @@ done
 0.5
 `.trim() + "\n")
   })
-  */
+
+  test("structs 4", async () => {
+    await expectOutput(`
+    def mul(A Matrix, v Vector) Vector {
+      return Vector{A.mat[0][0] * v.x + A.mat[0][1] * v.y,
+                    A.mat[1][0] * v.x + A.mat[1][1] * v.y};
+    }
+    def ident() Matrix {
+      return Matrix{[[1.0, 0.0],
+                    [0.0, 1.0]]};
+    }
+    def rot90CCW() Matrix {
+      return Matrix{[[0.0, -1.0],
+                     [1.0, 0.0]]};
+    }
+    def main() {
+      var I = ident();
+      var x = Vector{1.0, 0.0};
+      var Ix = mul(I, x);
+      print [Ix.x, Ix.y];
+      var R = rot90CCW();
+      for (var i = 0; i < 4; i += 1) {
+        x = mul(R, x);
+        print [x.x, x.y];
+      }
+    }
+    struct Matrix {
+      mat [[float; 2]; 2]
+    }
+    struct Vector {
+      x float,
+      y float
+    }
+    `,
+    `
+[1, 0]
+[0, 1]
+[-1, 0]
+[0, -1]
+[1, 0]
+`.trim() + "\n")
+  })
 })
 
 // TODO: string literals with non-ascii UTF-8 chars

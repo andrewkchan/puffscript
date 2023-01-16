@@ -1,14 +1,14 @@
 # Puffscript
 
-Puffscript is a toy imperative programming language that compiles to WebAssembly.
+Puffscript is a toy imperative programming language that compiles to WebAssembly. Try an online demo: https://andrewkchan.github.io/puffscript/
 
 **Features:**
 
 - Strong, static typing
-- Basic procedures. No classes or first-class functions
+- Basic functions (no first-class functions or closures)
+- Custom composite data types (structs) without methods
 - Fixed-length, contiguous multi-dimensional arrays
 - String literals are syntactic sugar for UTF-8 encoded byte arrays
-
 
 # Language reference
 
@@ -52,7 +52,7 @@ Or “list literals” enumerating all initializers:
 
 ```
 var tenZeroes = [0, 0, 0, 0, 0,
-                  0, 0, 0, 0, 0];
+                 0, 0, 0, 0, 0];
 ```
 
 You can get the length of an array with `len` and index into it with brackets:
@@ -107,6 +107,19 @@ def main() {
 
 Numerics cannot be casted directly to pointer types, so pointers can only be initialized with other pointers or by taking the address of variables. This discourages the use of null pointers.
 
+**Structs**
+
+Structs are custom data types which hold named member values and are defined using the `struct` keyword. Structs are instantiated by value and must initialize all members, which can later be accessed using the `.` operator:
+
+```
+struct Point { x float, y float }
+def main() {
+  var p1 = Point{1, 2};
+  var p2 = p1; // makes a copy
+  p2.x = 999;
+}
+```
+
 **Functions**
 
 Functions are defined like `def <functionName>(parameters) <returnType>`. If the return type is omitted, the function will be considered to have a return type of `void`, and need not explicitly return.
@@ -126,6 +139,7 @@ TODOs:
 
 - Function overloading (defining multiple functions with the same name but different parameters)
 - Exported and imported functions
+- Default arguments
 
 **Control flow**
 
@@ -166,9 +180,9 @@ In precedence order (lower first):
 | `==`, `!=`                                               | Equals, not equals                            | left to right |
 | `>`, `>=`, `<`, `<=`                                     | Comparisons                                   | left to right |
 | `+`, `-` (binary operators)                              | Addition, subtraction                         | left to right |
-| `*`, `/`, `%` (binary operators)                         | Multiplication, division, modulus             | left to right |
-| `!` (unary bang)<br>`-` (unary minus)<br>`&` (unary amp) | Logical NOT<br>Numeric negation<br>Address-of | right to left |
-| `~` (unary postfix tilde)<br>`()`, `[]`                  | Pointer dereference<br>Call/cast, subscript   | left to right |
+| `*`, `/`, `%`                         | Multiplication, division, modulus             | left to right |
+| `!a`<br>`-a`<br>`&a` | Logical NOT<br>Numeric negation<br>Address-of | right to left |
+| `a~`<br>`a()`, `a[]`<br>`a.b`                  | Pointer dereference<br>Call/cast, subscript<br>member access   | left to right |
 
 TODOs:
 

@@ -59,10 +59,8 @@ function debounce(cb: (args: IArguments) => void, wait: number) {
         clearTimeout(timeoutID)
       }
       timeoutID = setTimeout(wrapped, wait) as any
-      console.log("debounce")
       return
     }
-    console.log("exec")
     clearTimeout(timeoutID)
     timeoutID = -1
     cb(arguments)

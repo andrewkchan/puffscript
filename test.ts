@@ -449,6 +449,12 @@ describe("type checking", () => {
     var g = 5 % 2;
     var h = 5 % -2;
     var i = 5.0 % -2.0; // err
+
+    var j1 = [1.0] == [2.0]; // err
+    var j2 = [1.0] != [2.0]; // err
+    struct Point{ x float, y float }
+    var k1 = Point{1.0, 2.0} == Point{2.0, 3.0}; // err
+    var k2 = Point{1.0, 2.0} != Point{2.0, 3.0}; // err
     `,
     [
       "1: Cannot compare float to bool.",
@@ -457,7 +463,11 @@ describe("type checking", () => {
       "4: Invalid operand types for binary operator '+'.",
       "5: Invalid operand types for binary operator '/'.",
       "6: Invalid operand types for binary operator '>'.",
-      "17: Invalid operand types for binary operator '%'."
+      "17: Invalid operand types for binary operator '%'.",
+      "19: Cannot compare [float; 1] to [float; 1].",
+      "20: Cannot compare [float; 1] to [float; 1].",
+      "22: Cannot compare Point to Point.",
+      "23: Cannot compare Point to Point.",
     ])
   })
 
@@ -1595,23 +1605,6 @@ describe("type checking", () => {
     [
       "2: Cyclic member declaration for struct 'BadList'.",
       "14: Cyclic member declaration for struct 'Bad1'.",
-    ])
-  })
-
-  test("structs: nominal type comparisons", () => {
-    expectResolveErrors(`
-    def main() {
-      var p Point = Point{1, 2}; // ok
-      var v Vector = Vector{1, 2}; // ok
-      print p == Point{1, 2}; // ok
-      print p == p; // ok
-      print p == v; // err
-    }
-    struct Point { x float, y float }
-    struct Vector { x float, y float }
-    `,
-    [
-      "6: Cannot compare Point to Vector.",
     ])
   })
 })

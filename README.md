@@ -9,6 +9,7 @@ Puffscript is a toy imperative programming language that compiles to WebAssembly
 - Custom composite data types (structs) without methods
 - Fixed-length, contiguous multi-dimensional arrays
 - String literals are syntactic sugar for UTF-8 encoded byte arrays
+- Pointers, value semantics, and pointer arithmetic
 
 # Language reference
 
@@ -25,7 +26,7 @@ Primitives can be casted to one another via call syntax, e.g.
 var a = float(5);
 ```
 
-Decimal and hex literals for integers, bytes, and floats are supported. Floats are distinguished from ints/bytes by a decimal point: `.`
+Decimal and hex literals for integers, bytes, and floats are supported. Floats are distinguished from ints/bytes by a decimal point.
 
 **Variables**
 

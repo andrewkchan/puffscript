@@ -139,13 +139,19 @@ export function resolve(context: ast.Context, reportError: ReportError) {
           }
           case "!=":
           case "==": {
-            const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
-            if (lct) {
-              op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
-              op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
-            } else if (!ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
-              const leftTypeStr = ast.typeToString(op.left.resolvedType!)
-              const rightTypeStr = ast.typeToString(op.right.resolvedType!)
+            const leftTypeStr = ast.typeToString(op.left.resolvedType!)
+            const rightTypeStr = ast.typeToString(op.right.resolvedType!)
+            if (ast.isScalar(op.left.resolvedType!) && ast.isScalar(op.right.resolvedType!)) {
+              const lct = ast.getLowestCommonNumeric(op.left.resolvedType!, op.right.resolvedType!)
+              if (lct) {
+                op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator)
+                op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator)
+              } else if (!ast.isEqual(op.left.resolvedType!, op.right.resolvedType!)) {
+                resolveError(op.operator, `Cannot compare ${leftTypeStr} to ${rightTypeStr}.`)
+              }
+            } else {
+              // TODO: We should auto-generate equals operator (member-wise equals) for structs.
+              // memcmp is a bad idea because of float equality (NaNs, zero).
               resolveError(op.operator, `Cannot compare ${leftTypeStr} to ${rightTypeStr}.`)
             }
             op.resolvedType = ast.BoolType

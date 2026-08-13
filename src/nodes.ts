@@ -244,14 +244,18 @@ export interface LiteralExpr extends Node {
   kind: NodeKind.LITERAL_EXPR
   value: any
   type: Type
+  // Original source lexeme for numeric literals, used to emit
+  // reproducible WAT float constants. null for synthesized literals.
+  sourceLexeme: string | null
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function literalExpr({ value, type }: { value: any; type: Type }): LiteralExpr {
+export function literalExpr({ value, type, sourceLexeme }: { value: any; type: Type; sourceLexeme?: string }): LiteralExpr {
   return {
     kind: NodeKind.LITERAL_EXPR,
     value,
     type,
+    sourceLexeme: sourceLexeme ?? null,
     resolvedType: null
   }
 }

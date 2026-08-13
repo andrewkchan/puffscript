@@ -30,8 +30,8 @@ const codec = new UTF8Codec()
 //
 // Like in C and most other models, Puff's stack grows downwards.
 // The stack pointer is stored as $__stack_ptr__ WASM global.
-const STACK_TOP_BYTE_OFFSET = 512*1024
-const DATA_TOP_BYTE_OFFSET = 1024*1024
+const STACK_TOP_BYTE_OFFSET = 4*1024*1024
+const DATA_TOP_BYTE_OFFSET = 8*1024*1024
 
 const INITIAL_PAGES = (8*1024*1024) / (64*1024);
 
@@ -44,6 +44,29 @@ enum ExprMode {
 // https://webassembly.github.io/spec/core/text/values.html#strings
 function escapeString(str: string): string {
   return str.replace(/'/g, '\'').replace(/\\/g, '\\\\').replace(/"/g, '\"')
+}
+
+// Formats a float literal for WAT output from its source lexeme, e.g.
+// "5.50" => "5.5", "5." => "5", "3.14" => "3.14".
+// Emitting from the lexeme (rather than the parsed numeric value) keeps
+// the backend independent of host float-formatting behavior, which makes
+// output reproducible by the self-hosted compiler.
+function formatFloatLexeme(lexeme: string): string {
+  let out = lexeme
+  if (out.indexOf(".") >= 0) {
+    let end = out.length
+    while (end > 0 && out.charAt(end - 1) === "0") {
+      end--
+    }
+    if (end > 0 && out.charAt(end - 1) === ".") {
+      end--
+    }
+    out = out.substring(0, end)
+  }
+  if (out.length === 0) {
+    out = "0"
+  }
+  return out
 }
 
 // Returns the WASM type used to represent values of the given type in the WASM (host) stack.
@@ -925,7 +948,11 @@ export function emit(context: ast.Context): string {
             break
           }
           case ast.TypeCategory.FLOAT: {
-            line(`f32.const ${op.value}`)
+            if (op.sourceLexeme !== null) {
+              line(`f32.const ${formatFloatLexeme(op.sourceLexeme)}`)
+            } else {
+              line(`f32.const ${op.value}`)
+            }
             break
           }
           default: {

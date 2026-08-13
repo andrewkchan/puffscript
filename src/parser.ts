@@ -845,7 +845,8 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     if (match(TokenType.NUMBER_DECIMAL)) {
       return ast.literalExpr({
         value: previous().literal,
-        type: ast.FloatType
+        type: ast.FloatType,
+        sourceLexeme: previous().lexeme
       })
     }
     if (match(TokenType.NUMBER_HEX)) {

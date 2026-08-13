@@ -1,0 +1,22 @@
+// Development driver: runs scan/parse/resolve and reports errors in the same
+// format as `tools/dump.ts --errors` for differential testing.
+
+def main() {
+  gSource = readAllInput();
+  initContext();
+  scanTokens();
+  if (numErrors() == 0) {
+    parseProgram();
+    if (numErrors() == 0) {
+      resolveProgram();
+    }
+  }
+  for (var i = 0; i < gErrors~.count; i = i + 1) {
+    writeStrTo(Str~(vecGet(gErrors, i)), true);
+    puterr(10);
+  }
+  if (numErrors() > 0) {
+    exit(1);
+  }
+  exit(0);
+}

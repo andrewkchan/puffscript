@@ -439,6 +439,9 @@ export function emit(context: ast.Context): string {
   }
 
   function emitDebugComments(node: ast.Node) {
+    if (!DEBUG_COMMENTS) {
+      return
+    }
     switch (node.kind) {
       case ast.NodeKind.BINARY_EXPR:
       case ast.NodeKind.CAST_EXPR:
@@ -469,10 +472,12 @@ export function emit(context: ast.Context): string {
       // expressions
       case ast.NodeKind.ASSIGN_EXPR: {
         const op = node as ast.AssignExpr
-        op.operator.lineStr(true).split("\n").forEach((l) => {
-          debugLine(`;; ${l}`)
-        })
-        debugLine(``)
+        if (DEBUG_COMMENTS) {
+          op.operator.lineStr(true).split("\n").forEach((l) => {
+            debugLine(`;; ${l}`)
+          })
+          debugLine(``)
+        }
 
         if (op.left.kind === ast.NodeKind.VARIABLE_EXPR) {
           const symbol = op.left.resolvedSymbol!
@@ -803,10 +808,12 @@ export function emit(context: ast.Context): string {
       }
       case ast.NodeKind.DOT_EXPR: {
         const op = node as ast.DotExpr
-        op.dot.lineStr(true).split("\n").forEach((l) => {
-          debugLine(`;; ${l}`)
-        })
-        debugLine(``)
+        if (DEBUG_COMMENTS) {
+          op.dot.lineStr(true).split("\n").forEach((l) => {
+            debugLine(`;; ${l}`)
+          })
+          debugLine(``)
+        }
 
         const memberType = op.resolvedType
         const structType = op.callee.resolvedType
@@ -845,10 +852,12 @@ export function emit(context: ast.Context): string {
       case ast.NodeKind.INDEX_EXPR: {
         // TODO: trap on out-of-bounds access
         const op = node as ast.IndexExpr
-        op.bracket.lineStr(true).split("\n").forEach((l) => {
-          debugLine(`;; ${l}`)
-        })
-        debugLine(``)
+        if (DEBUG_COMMENTS) {
+          op.bracket.lineStr(true).split("\n").forEach((l) => {
+            debugLine(`;; ${l}`)
+          })
+          debugLine(``)
+        }
 
         const elementType = op.resolvedType!
         visit(op.callee, ExprMode.LVALUE) // get address of array start

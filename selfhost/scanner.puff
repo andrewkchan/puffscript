@@ -86,7 +86,7 @@ struct Token {
 }
 
 def tokenNew(type int, lexPtr byte~, lexLen int, offset int) Token~ {
-  var t = Token~(alloc(32));
+  var t = Token~(alloc(40));
   t~.type = type;
   t~.lexPtr = lexPtr;
   t~.lexLen = lexLen;
@@ -98,7 +98,7 @@ def tokenNew(type int, lexPtr byte~, lexLen int, offset int) Token~ {
 }
 
 def fakeToken(type int, lexeme Str~, locationProvider Token~) Token~ {
-  var t = Token~(alloc(32));
+  var t = Token~(alloc(40));
   t~.type = type;
   t~.lexPtr = lexeme~.data;
   t~.lexLen = lexeme~.count;
@@ -450,13 +450,31 @@ def parseHexLexeme(start int, length int) int {
   return v;
 }
 
-// Parses the float literal digits as f32.
+// Parses the float literal digits as f32. The integer part is accumulated
+// exactly in i32 while it fits (then converted, which rounds correctly);
+// we only fall back to lossy f32 accumulation for huge values.
 def parseFloatLexeme(start int, length int) float {
   var v = 0.0;
+  var intPart = 0;
+  var overflowed = false;
   var i = 0;
   while (i < length && srcByte(start + i) != 46) {
-    v = v * 10.0 + float(srcByte(start + i) - 48);
+    var d = srcByte(start + i) - 48;
+    if (!overflowed) {
+      if (intPart > (2147483647 - d) / 10) {
+        overflowed = true;
+        v = float(intPart);
+      } else {
+        intPart = intPart * 10 + d;
+      }
+    }
+    if (overflowed) {
+      v = v * 10.0 + float(d);
+    }
     i = i + 1;
+  }
+  if (!overflowed) {
+    v = float(intPart);
   }
   i = i + 1; // skip '.'
   var scale = 0.1;
@@ -614,7 +632,7 @@ def scanTokens() {
   }
 
   var eofLex = strEmpty();
-  var eof = Token~(alloc(32));
+  var eof = Token~(alloc(40));
   eof~.type = T_EOF;
   eof~.lexPtr = eofLex~.data;
   eof~.lexLen = 0;

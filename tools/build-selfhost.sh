@@ -13,6 +13,7 @@ SOURCES=(
   selfhost/scanner.puff
 )
 [ -f selfhost/ast.puff ] && SOURCES+=(selfhost/ast.puff)
+[ -f selfhost/sexpr.puff ] && SOURCES+=(selfhost/sexpr.puff)
 [ -f selfhost/parser.puff ] && SOURCES+=(selfhost/parser.puff)
 [ -f selfhost/resolver.puff ] && SOURCES+=(selfhost/resolver.puff)
 [ -f selfhost/backend.puff ] && SOURCES+=(selfhost/backend.puff)

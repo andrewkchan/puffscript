@@ -1,0 +1,342 @@
+// sexpr.puff
+// AST s-expression printer, ported from astToSExpr/typeToSExpr in
+// src/nodes.ts. Used for differential testing of the parser against the
+// reference compiler.
+
+def sxRaw(out Buf~, p byte~, n int) {
+  bufPushBytes(out, p, n);
+}
+
+def typeToSExpr(out Buf~, t Type~) {
+  if (t~.category == TC_ARRAY) {
+    var s0 = "(arraytype ";
+    sxRaw(out, &s0[0], len(s0));
+    bufPushInt(out, t~.length);
+    bufPushChar(out, 32);
+    typeToSExpr(out, t~.elementType);
+    bufPushChar(out, 41);
+    return;
+  }
+  if (t~.category == TC_POINTER) {
+    var s1 = "(ptr ";
+    sxRaw(out, &s1[0], len(s1));
+    typeToSExpr(out, t~.elementType);
+    bufPushChar(out, 41);
+    return;
+  }
+  if (t~.category == TC_STRUCT) {
+    var s2 = "(struct (";
+    sxRaw(out, &s2[0], len(s2));
+    if (int(t~.resolvedStruct) != 0) {
+      var members = t~.resolvedStruct~.params;
+      for (var i = 0; i < members~.count; i = i + 1) {
+        var member = Param~(vecGet(members, i));
+        bufPushChar(out, 40);
+        bufPushBytes(out, member~.name~.lexPtr, member~.name~.lexLen);
+        bufPushChar(out, 32);
+        typeToSExpr(out, member~.type);
+        bufPushChar(out, 41);
+      }
+    } else {
+      var s3 = "unresolved '";
+      sxRaw(out, &s3[0], len(s3));
+      bufPushBytes(out, t~.name~.lexPtr, t~.name~.lexLen);
+      bufPushChar(out, 39);
+    }
+    bufPushChar(out, 41);
+    bufPushChar(out, 41);
+    return;
+  }
+  if (t~.category == TC_ERROR) {
+    var s4 = "<error-type>";
+    sxRaw(out, &s4[0], len(s4));
+    return;
+  }
+  // int/float/byte/bool/void: reuse typeToString's lowercase names
+  typeToString(out, t);
+}
+
+// Appends the literal string value escaped like JSON.stringify.
+def sxQuotedString(out Buf~, s Str~) {
+  bufPushChar(out, 34);
+  for (var i = 0; i < s~.count; i = i + 1) {
+    var c = int(strGet(s, i));
+    if (c == 34) {
+      bufPushChar(out, 92);
+      bufPushChar(out, 34);
+    } else if (c == 92) {
+      bufPushChar(out, 92);
+      bufPushChar(out, 92);
+    } else if (c == 10) {
+      bufPushChar(out, 92);
+      bufPushChar(out, 110); // 'n'
+    } else if (c == 9) {
+      bufPushChar(out, 92);
+      bufPushChar(out, 116); // 't'
+    } else if (c == 13) {
+      bufPushChar(out, 92);
+      bufPushChar(out, 114); // 'r'
+    } else {
+      bufPushChar(out, c);
+    }
+  }
+  bufPushChar(out, 34);
+}
+
+def astToSExpr(out Buf~, node Node~) {
+  var kind = node~.kind;
+  if (kind == NK_ASSIGN_EXPR) {
+    var s0 = "(assign ";
+    sxRaw(out, &s0[0], len(s0));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.b);
+    bufPushChar(out, 41);
+  } else if (kind == NK_BINARY_EXPR || kind == NK_LOGICAL_EXPR) {
+    bufPushChar(out, 40);
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.b);
+    bufPushChar(out, 41);
+  } else if (kind == NK_CALL_EXPR) {
+    var s1 = "(call ";
+    sxRaw(out, &s1[0], len(s1));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    bufPushChar(out, 40);
+    for (var i = 0; i < node~.list~.count; i = i + 1) {
+      if (i > 0) {
+        bufPushChar(out, 32);
+      }
+      astToSExpr(out, Node~(vecGet(node~.list, i)));
+    }
+    bufPushChar(out, 41);
+    bufPushChar(out, 41);
+  } else if (kind == NK_CAST_EXPR) {
+    bufPushChar(out, 40);
+    typeToSExpr(out, node~.typeA);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_DEREF_EXPR) {
+    var s2 = "(deref ";
+    sxRaw(out, &s2[0], len(s2));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_DOT_EXPR) {
+    var s3 = "(. ";
+    sxRaw(out, &s3[0], len(s3));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    bufPushBytes(out, node~.tokB~.lexPtr, node~.tokB~.lexLen);
+    bufPushChar(out, 41);
+  } else if (kind == NK_GROUP_EXPR) {
+    bufPushChar(out, 40);
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_INDEX_EXPR) {
+    var s4 = "(index ";
+    sxRaw(out, &s4[0], len(s4));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.b);
+    bufPushChar(out, 41);
+  } else if (kind == NK_LEN_EXPR) {
+    var s5 = "(len ";
+    sxRaw(out, &s5[0], len(s5));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_LIST_EXPR) {
+    bufPushChar(out, 40);
+    if (node~.listKind == LK_LIST) {
+      var s6 = "list-initializer";
+      sxRaw(out, &s6[0], len(s6));
+      for (var j = 0; j < node~.list~.count; j = j + 1) {
+        bufPushChar(out, 32);
+        astToSExpr(out, Node~(vecGet(node~.list, j)));
+      }
+    } else {
+      var s7 = "repeat-initializer ";
+      sxRaw(out, &s7[0], len(s7));
+      bufPushInt(out, node~.repeatLen);
+      bufPushChar(out, 32);
+      astToSExpr(out, node~.a);
+    }
+    bufPushChar(out, 41);
+  } else if (kind == NK_LITERAL_EXPR) {
+    var cat = node~.typeA~.category;
+    if (cat == TC_FLOAT) {
+      // Mirrors: integral values print via toFixed(1), others via
+      // JSON.stringify (which we approximate with the normalized lexeme).
+      var v = node~.litFloat;
+      var isIntegral = false;
+      if (v >= -2147483520.0 && v <= 2147483520.0) {
+        if (float(int(v)) == v) {
+          isIntegral = true;
+        }
+      }
+      if (isIntegral) {
+        bufPushInt(out, int(v));
+        var s8 = ".0";
+        sxRaw(out, &s8[0], len(s8));
+      } else {
+        // strip trailing zeros (and a trailing '.') from the lexeme
+        var end = node~.lexeme~.count;
+        while (end > 0 && int(strGet(node~.lexeme, end - 1)) == 48) {
+          end = end - 1;
+        }
+        if (end > 0 && int(strGet(node~.lexeme, end - 1)) == 46) {
+          end = end - 1;
+        }
+        bufPushBytes(out, node~.lexeme~.data, end);
+      }
+    } else if (cat == TC_BOOL) {
+      if (node~.litBool) {
+        var s9 = "true";
+        sxRaw(out, &s9[0], len(s9));
+      } else {
+        var s10 = "false";
+        sxRaw(out, &s10[0], len(s10));
+      }
+    } else if (cat == TC_ARRAY) {
+      // string literal
+      sxQuotedString(out, node~.litStr);
+    } else if (int(node~.decStr) != 0) {
+      bufPushBytes(out, node~.decStr~.data, node~.decStr~.count);
+    } else {
+      bufPushInt(out, node~.litInt);
+    }
+  } else if (kind == NK_UNARY_EXPR) {
+    bufPushChar(out, 40);
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_VARIABLE_EXPR) {
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+  } else if (kind == NK_BLOCK_STMT) {
+    var s11 = "(block ";
+    sxRaw(out, &s11[0], len(s11));
+    for (var k = 0; k < node~.list~.count; k = k + 1) {
+      if (k > 0) {
+        bufPushChar(out, 32);
+      }
+      astToSExpr(out, Node~(vecGet(node~.list, k)));
+    }
+    bufPushChar(out, 41);
+  } else if (kind == NK_EXPRESSION_STMT) {
+    astToSExpr(out, node~.a);
+  } else if (kind == NK_FUNCTION_STMT) {
+    bufPushChar(out, 40);
+    if (int(node~.hostModule) != 0) {
+      var s12 = "import ";
+      sxRaw(out, &s12[0], len(s12));
+    } else if (node~.isExported) {
+      var s13 = "export ";
+      sxRaw(out, &s13[0], len(s13));
+    }
+    var s14 = "def ";
+    sxRaw(out, &s14[0], len(s14));
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 32);
+    bufPushChar(out, 40);
+    for (var m = 0; m < node~.params~.count; m = m + 1) {
+      if (m > 0) {
+        bufPushChar(out, 32);
+      }
+      var param = Param~(vecGet(node~.params, m));
+      var s15 = "(param ";
+      sxRaw(out, &s15[0], len(s15));
+      bufPushBytes(out, param~.name~.lexPtr, param~.name~.lexLen);
+      bufPushChar(out, 32);
+      typeToSExpr(out, param~.type);
+      bufPushChar(out, 41);
+    }
+    bufPushChar(out, 41);
+    bufPushChar(out, 32);
+    bufPushChar(out, 40);
+    if (node~.hasBody) {
+      for (var n2 = 0; n2 < node~.list~.count; n2 = n2 + 1) {
+        if (n2 > 0) {
+          bufPushChar(out, 32);
+        }
+        astToSExpr(out, Node~(vecGet(node~.list, n2)));
+      }
+    }
+    bufPushChar(out, 41);
+    bufPushChar(out, 41);
+  } else if (kind == NK_IF_STMT) {
+    var s16 = "(if ";
+    sxRaw(out, &s16[0], len(s16));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.b);
+    bufPushChar(out, 32);
+    if (int(node~.c) != 0) {
+      astToSExpr(out, node~.c);
+      bufPushChar(out, 32);
+    }
+    bufPushChar(out, 41);
+  } else if (kind == NK_LOOP_CONTROL_STMT) {
+    bufPushChar(out, 40);
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 41);
+  } else if (kind == NK_PRINT_STMT) {
+    var s17 = "(print ";
+    sxRaw(out, &s17[0], len(s17));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_RETURN_STMT) {
+    var s18 = "(return ";
+    sxRaw(out, &s18[0], len(s18));
+    if (int(node~.a) != 0) {
+      astToSExpr(out, node~.a);
+    } else {
+      var s19 = "void";
+      sxRaw(out, &s19[0], len(s19));
+    }
+    bufPushChar(out, 41);
+  } else if (kind == NK_STRUCT_STMT) {
+    var s20 = "(struct ";
+    sxRaw(out, &s20[0], len(s20));
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 32);
+    bufPushChar(out, 40);
+    for (var q = 0; q < node~.params~.count; q = q + 1) {
+      var member = Param~(vecGet(node~.params, q));
+      bufPushChar(out, 40);
+      bufPushBytes(out, member~.name~.lexPtr, member~.name~.lexLen);
+      bufPushChar(out, 32);
+      typeToSExpr(out, member~.type);
+      bufPushChar(out, 41);
+    }
+    bufPushChar(out, 41);
+    bufPushChar(out, 41);
+  } else if (kind == NK_VAR_STMT) {
+    var s21 = "(var ";
+    sxRaw(out, &s21[0], len(s21));
+    bufPushBytes(out, node~.tokA~.lexPtr, node~.tokA~.lexLen);
+    bufPushChar(out, 32);
+    if (int(node~.typeA) != 0) {
+      typeToSExpr(out, node~.typeA);
+      bufPushChar(out, 32);
+    }
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 41);
+  } else if (kind == NK_WHILE_STMT) {
+    var s22 = "(while ";
+    sxRaw(out, &s22[0], len(s22));
+    astToSExpr(out, node~.a);
+    bufPushChar(out, 32);
+    astToSExpr(out, node~.b);
+    if (int(node~.c) != 0) {
+      bufPushChar(out, 32);
+      astToSExpr(out, node~.c);
+    }
+    bufPushChar(out, 41);
+  } else {
+    die(90); // unhandled node kind in astToSExpr
+  }
+}

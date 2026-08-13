@@ -1,0 +1,28 @@
+// main.puff
+// Driver for the self-hosted puffscript compiler.
+// Reads puffscript source from stdin; writes WAT to stdout.
+// Compilation errors are written to stderr and exit code is 1.
+
+def main() {
+  gSource = readAllInput();
+  initContext();
+  scanTokens();
+  if (numErrors() == 0) {
+    parseProgram();
+    if (numErrors() == 0) {
+      resolveProgram();
+      if (numErrors() == 0) {
+        emitProgram();
+      }
+    }
+  }
+  if (numErrors() > 0) {
+    for (var i = 0; i < gErrors~.count; i = i + 1) {
+      writeStrTo(Str~(vecGet(gErrors, i)), true);
+      puterr(10);
+    }
+    exit(1);
+  }
+  writeBufTo(gOut, false);
+  exit(0);
+}

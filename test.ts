@@ -54,7 +54,14 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes):
   expect(errors).toEqual(expectedErrors)
   return context
 }
-async function expectOutput(source: string, expectedOutput: string) {
+class ExitCalled extends Error {
+  code: number
+  constructor(code: number) {
+    super(`exit ${code}`)
+    this.code = code
+  }
+}
+async function expectOutput(source: string, expectedOutput: string, stdin: string = "", expectedExitCode: number = 0) {
   const context = expectErrors(source, [], Passes.THROUGH_RESOLVE)
   if (context) {
     const code = emit(context)
@@ -62,6 +69,8 @@ async function expectOutput(source: string, expectedOutput: string) {
     child_process.execSync(`npx -p wabt wat2wasm test/tmp.wat -o test/tmp.wasm`)
 
     const codec = new UTF8Codec()
+    const stdinBuf = codec.encodeString(stdin)
+    let stdinPos = 0
     let ioBuffer = ""
     let output = ""
 
@@ -83,12 +92,36 @@ async function expectOutput(source: string, expectedOutput: string) {
           output += ioBuffer + "\n"
           ioBuffer = ""
         }
+      },
+      env: {
+        getchar: (): number => {
+          return stdinPos < stdinBuf.length ? stdinBuf[stdinPos++] : -1
+        },
+        putchar: (c: number) => {
+          output += codec.decodeASCIIChar(c & 0xFF)
+        },
+        puterr: (c: number) => {
+          output += codec.decodeASCIIChar(c & 0xFF)
+        },
+        exit: (code: number) => {
+          throw new ExitCalled(code)
+        }
       }
     });
     const exports = instance.instance.exports as any
-    exports.__init_globals__()
-    exports.main()
+    let exitCode = 0
+    try {
+      exports.__init_globals__()
+      exports.main()
+    } catch (e) {
+      if (e instanceof ExitCalled) {
+        exitCode = e.code
+      } else {
+        throw e
+      }
+    }
     expect(output).toBe(expectedOutput)
+    expect(exitCode).toBe(expectedExitCode)
   }
 }
 
@@ -424,6 +457,81 @@ describe("parser", () => {
       "13: 'FunctionStructCollision' is already declared in this scope.",
       "18: Expect expression.",
     ])
+  })
+
+  test("Import and export declarations", () => {
+    expectAST(`
+    import def getchar() int;
+    import def putchar(c int);
+    export def main() {}
+    `,
+    "(" +
+      "(import def getchar () ()) " +
+      "(import def putchar ((param c int)) ()) " +
+      "(export def main () ())" +
+    ")")
+
+    expectParseErrors(`
+    import getchar() int;
+    def main() {}
+    `,
+    [
+      "1: Expect 'def' after 'import'."
+    ])
+
+    expectParseErrors(`
+    import def getchar() int
+    def main() {}
+    `,
+    [
+      "2: Expect ';' after import declaration."
+    ])
+
+    expectParseErrors(`
+    export struct Point { x int, y int }
+    def main() {}
+    `,
+    [
+      "1: Expect 'def' after 'export'."
+    ])
+
+    expectParseErrors(`
+    import def getchar() int;
+    def getchar() int { return -1; }
+    def main() {}
+    `,
+    [
+      "2: 'getchar' is already declared in this scope."
+    ])
+
+    expectParseErrors(`
+    def main() {
+      import def getchar() int;
+    }
+    `,
+    [
+      "2: Expect expression.", // at 'import'
+      "2: Expect expression."  // after synchronizing to 'def'
+    ])
+  })
+
+  test("Pointer cast syntax", () => {
+    expectAST(`
+    struct Token { pos int }
+    def main() {
+      var p = int~(1024);
+      var t = Token~(p);
+      var i = int(t);
+    }
+    `,
+    "(" +
+      "(struct Token ((pos int))) " +
+      "(def main () (" +
+        "(var p ((ptr int) 1024)) " +
+        "(var t ((ptr (struct (unresolved 'Token'))) p)) " +
+        "(var i (int t))" +
+      "))" +
+    ")")
   })
 })
 
@@ -1605,6 +1713,64 @@ describe("type checking", () => {
     [
       "2: Cyclic member declaration for struct 'BadList'.",
       "14: Cyclic member declaration for struct 'Bad1'.",
+    ])
+  })
+
+  test("pointer casts", () => {
+    expectResolveErrors(`
+    struct Vec { x float, y float }
+    def main() {
+      var p = int~(1024);      // ok: int-to-pointer
+      var v = Vec~(p);         // ok: pointer-to-pointer
+      var i = int(v);          // ok: pointer-to-int
+      var f = float~(p);       // ok: pointer-to-pointer
+      var e1 = float~(1.5);    // error! float-to-pointer
+      var e2 = int~(true);     // error! bool-to-pointer
+      var e3 = float(p);       // error! pointer-to-float
+      var e4 = Missing~(p);    // error! unknown typename
+    }
+    `,
+    [
+      "7: Cannot cast from float to float~.",
+      "8: Cannot cast from bool to int~.",
+      "9: Cannot cast from int~ to float.",
+      "10: Undefined typename 'Missing'.",
+    ])
+  })
+
+  test("imports and builtins", () => {
+    expectResolveErrors(`
+    import def getchar() int;
+    import def putchar(c int);
+    def main() {
+      putchar(getchar());
+      putchar();               // error! arity
+      var x int = getchar(3);  // error! arity
+      var pages = __grow_heap__(1);
+      var end int = __heap_end__();
+    }
+    `,
+    [
+      "5: Expected 1 arguments but got 0 in call to putchar.",
+      "6: Expected 0 arguments but got 1 in call to getchar.",
+    ])
+  })
+
+  test("address-of struct members and dereferences", () => {
+    expectResolveErrors(`
+    struct Point { x int, y int }
+    def main() {
+      var pt = Point{1, 2};
+      var px = &pt.x;          // ok
+      var pp = &pt;            // ok
+      var py = &pp~.y;         // ok
+      var pd = &pp~;           // ok
+      px~ = 5;
+      var bad = &5;            // error!
+    }
+    `,
+    [
+      "9: Invalid operand for unary operator '&'.",
     ])
   })
 })
@@ -2867,6 +3033,85 @@ done
 [0, -1]
 [1, 0]
 `.trim() + "\n")
+  })
+
+  test("imports, exports, and pointer casts", async () => {
+    await expectOutput(`
+    import def getchar() int;
+    import def putchar(c int);
+
+    struct Point { x int, y int }
+
+    export def heapStart() int {
+      return 1024*1024;
+    }
+
+    def main() {
+      var p = Point~(int~(heapStart()));
+      p~.x = 3;
+      p~.y = 4;
+      var py = &p~.y;
+      py~ = 5;
+      print p~.x + p~.y;
+      print int(py) - int(p);
+      print int~(int(p)) == int~(heapStart());
+
+      // echo stdin to stdout, uppercasing lowercase ascii
+      var c = getchar();
+      while (c >= 0) {
+        if (c >= int('a') && c <= int('z')) {
+          c = c - 32;
+        }
+        putchar(c);
+        c = getchar();
+      }
+    }
+    `,
+    `
+8
+4
+1
+`.trim() + "\n" + "WASM!\n",
+    "wasm!\n")
+  })
+
+  test("heap builtins", async () => {
+    await expectOutput(`
+    def main() {
+      var initialPages = __heap_end__() / 65536;
+      print initialPages;
+      var res = __grow_heap__(2);
+      print res == initialPages;
+      print __heap_end__() / 65536 - initialPages;
+
+      // write to and read from newly grown memory
+      var p = int~(__heap_end__() - 4);
+      p~ = 12345;
+      print p~;
+    }
+    `,
+    `
+128
+1
+2
+12345
+`.trim() + "\n")
+  })
+
+  test("exit builtin", async () => {
+    await expectOutput(`
+    import def exit(code int);
+    def main() {
+      print 1;
+      exit(42);
+      print 2;
+    }
+    `,
+    `
+1
+`.trim() + "\n",
+    "",
+    42)
   })
 })
 

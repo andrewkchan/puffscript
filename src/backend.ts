@@ -91,7 +91,7 @@ function isVariableInRegister(symbol: ast.VariableSymbol | ast.ParamSymbol): boo
   return type !== null && ast.isScalar(type)
 }
 
-const DEBUG_COMMENTS = true
+const DEBUG_COMMENTS = false
 
 interface LoopLabel {
   outerLabel: string
@@ -709,7 +709,8 @@ export function emit(context: ast.Context): string {
                 break
               }
               case ast.TypeCategory.BOOL:
-              case ast.TypeCategory.INT: {
+              case ast.TypeCategory.INT:
+              case ast.TypeCategory.POINTER: {
                 // no conversion needed
                 break
               }
@@ -743,7 +744,8 @@ export function emit(context: ast.Context): string {
             break
           }
           case ast.TypeCategory.POINTER: {
-            if (op.value.resolvedType?.category === ast.TypeCategory.POINTER) {
+            if (op.value.resolvedType?.category === ast.TypeCategory.POINTER ||
+                op.value.resolvedType?.category === ast.TypeCategory.INT) {
               // no conversions needed
             } else {
               throw new Error(`Unexpected type ${ast.typeToString(op.type)} for cast source`)
@@ -991,8 +993,11 @@ export function emit(context: ast.Context): string {
                 }
                 break
               }
-              case ast.NodeKind.INDEX_EXPR: {
+              case ast.NodeKind.INDEX_EXPR:
+              case ast.NodeKind.DOT_EXPR:
+              case ast.NodeKind.DEREF_EXPR: {
                 // `&arr[i]` should return address of the ith element in `arr`.
+                // `&s.member` and `&p~` similarly return addresses of their operands.
                 visit(op.value, ExprMode.LVALUE)
                 break
               }
@@ -1063,8 +1068,8 @@ export function emit(context: ast.Context): string {
           break
         }
         localLocs = new Map()
-        if (op.name.lexeme === "main") {
-          line(`(func ${wasmId("main")} (export "main")`)
+        if (op.name.lexeme === "main" || op.isExported) {
+          line(`(func ${wasmId(op.name.lexeme)} (export "${op.name.lexeme}")`)
         } else {
           line(`(func ${wasmId(op.name.lexeme)}`)
         }
@@ -1290,6 +1295,23 @@ export function emit(context: ast.Context): string {
     line(`(import "io" "puti" (func ${wasmId("__puti__")} (param i32)))`)
     line(`(import "io" "flush" (func ${wasmId("__flush__")}))`)
 
+    // Imports must precede all non-import definitions in the module.
+    context.topLevelStatements.forEach((statement) => {
+      if (statement.kind === ast.NodeKind.FUNCTION_STMT) {
+        const fn = statement as ast.FunctionStmt
+        if (fn.hostModule !== null) {
+          let sig = ""
+          fn.params.forEach((param) => {
+            sig += ` (param ${registerType(param.type)})`
+          })
+          if (!ast.isEqual(fn.returnType, ast.VoidType)) {
+            sig += ` (result ${registerType(fn.returnType)})`
+          }
+          line(`(import "${fn.hostModule}" "${fn.name.lexeme}" (func ${wasmId(fn.name.lexeme)}${sig}))`)
+        }
+      }
+    })
+
     line(`(memory $memory ${INITIAL_PAGES})`)
 
     line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`)
@@ -1399,6 +1421,21 @@ export function emit(context: ast.Context): string {
       // TODO: inline callsites?
       line(`local.get $x`)
       line(`f32.sqrt`)
+    }
+    line(`)`)
+
+    line(`(func ${wasmId("__heap_end__")} (result i32)`)
+    {
+      line(`memory.size`)
+      line(`i32.const 65536`)
+      line(`i32.mul`)
+    }
+    line(`)`)
+
+    line(`(func ${wasmId("__grow_heap__")} (param $numPages i32) (result i32)`)
+    {
+      line(`local.get $numPages`)
+      line(`memory.grow`)
     }
     line(`)`)
 

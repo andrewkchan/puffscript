@@ -266,6 +266,7 @@ export function resolve(context: ast.Context, reportError: ReportError) {
       }
       case ast.NodeKind.CAST_EXPR: {
         const op = node as ast.CastExpr
+        op.type = resolveType(op.type)
         resolveNode(op.value, isLiveAtEnd)
         if (!ast.canCast(op.value.resolvedType!, op.type)) {
           resolveError(op.token, `Cannot cast from ${ast.typeToString(op.value.resolvedType!)} to ${ast.typeToString(op.type)}.`)
@@ -446,7 +447,11 @@ export function resolve(context: ast.Context, reportError: ReportError) {
                   category: ast.TypeCategory.POINTER,
                   elementType: op.value.resolvedType!
                 }
-              } else if (op.value.kind === ast.NodeKind.INDEX_EXPR) {
+              } else if (
+                op.value.kind === ast.NodeKind.INDEX_EXPR ||
+                op.value.kind === ast.NodeKind.DOT_EXPR ||
+                op.value.kind === ast.NodeKind.DEREF_EXPR
+              ) {
                 op.resolvedType = {
                   category: ast.TypeCategory.POINTER,
                   elementType: op.value.resolvedType!

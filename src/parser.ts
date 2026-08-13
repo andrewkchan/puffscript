@@ -116,14 +116,65 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
   }
 
   function topDecl(): ast.TopStmt {
-    if (match(TokenType.DEF)) return funDecl()
+    if (match(TokenType.IMPORT)) {
+      consume(TokenType.DEF, "Expect 'def' after 'import'.")
+      return importDecl()
+    }
+    if (match(TokenType.EXPORT)) {
+      consume(TokenType.DEF, "Expect 'def' after 'export'.")
+      return funDecl(/* isExported */ true)
+    }
+    if (match(TokenType.DEF)) return funDecl(/* isExported */ false)
     if (match(TokenType.STRUCT)) return structDecl()
     if (match(TokenType.VAR)) return varDecl()
 
     throw parseError("Only variable declarations and function definitions allowed at the top-level.")
   }
 
-  function funDecl(): ast.FunctionStmt {
+  function importDecl(): ast.FunctionStmt {
+    const name = consume(TokenType.IDENTIFIER, "Expect identifier after 'def'.")
+
+    consume(TokenType.LEFT_PAREN, "Expect '(' after function name.")
+    const params: ast.Param[] = []
+    while (!check(TokenType.RIGHT_PAREN) && !isAtEnd()) {
+      if (params.length > 0) {
+        consume(TokenType.COMMA, "Missing comma after parameter.")
+      }
+      const paramName = consume(TokenType.IDENTIFIER, "Expect identifier.")
+      const paramType = type()
+      params.push({
+        name: paramName,
+        type: paramType
+      })
+    }
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after parameters.")
+
+    let returnType: ast.Type = ast.VoidType
+    if (!check(TokenType.SEMICOLON)) {
+      returnType = type()
+    }
+    consume(TokenType.SEMICOLON, "Expect ';' after import declaration.")
+
+    const node = ast.importedFunctionStmt({
+      name,
+      params,
+      returnType,
+      symbol: null,
+      hostModule: "env"
+    })
+    const outerScope = peekScope()
+    if (outerScope.hasDirect(name.lexeme)) {
+      // Throw; we want to ignore this function and synchronize to next statement
+      throw parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`)
+    } else {
+      const symbol = context.functionSymbol(node)
+      outerScope.define(name.lexeme, symbol)
+      node.symbol = symbol
+    }
+    return node
+  }
+
+  function funDecl(isExported: boolean): ast.FunctionStmt {
     const name = consume(TokenType.IDENTIFIER, "Expect identifier after 'def'.")
 
     consume(TokenType.LEFT_PAREN, "Expect '(' after function name.")
@@ -167,7 +218,8 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
       returnType,
       block: statements,
       scope,
-      symbol: null
+      symbol: null,
+      isExported
     })
     const outerScope = peekScope()
     if (outerScope.hasDirect(name.lexeme)) {
@@ -737,6 +789,46 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     return expr
   }
 
+  // Returns true if the token stream looks like the start of a cast to
+  // a pointer-to-struct type, e.g. `Foo~(expr)` or `Foo~~(expr)`.
+  function checkStructPtrCast(): boolean {
+    if (!check(TokenType.IDENTIFIER)) {
+      return false
+    }
+    let i = current + 1
+    while (i < tokens.length && tokens[i].type === TokenType.TILDE) {
+      i++
+    }
+    return i > current + 1 && i < tokens.length && tokens[i].type === TokenType.LEFT_PAREN
+  }
+
+  function castPrimary(): ast.Expr {
+    // cast expression
+    // TODO: allow pointers to arrays
+    const castType = type()
+    switch (castType.category) {
+      case ast.TypeCategory.INT:
+      case ast.TypeCategory.FLOAT:
+      case ast.TypeCategory.BYTE:
+      case ast.TypeCategory.BOOL:
+      case ast.TypeCategory.POINTER: {
+        break
+      }
+      default: {
+        throw parseError("Cannot cast to this type.")
+      }
+    }
+    consume(TokenType.LEFT_PAREN, "Expect '(' after type in cast expression.")
+    const paren = previous()
+    const value = expression()
+    consume(TokenType.RIGHT_PAREN, "Expect ')' after cast expression.")
+    return ast.castExpr({
+      token: paren,
+      type: castType,
+      value
+    })
+  }
+
   function exprPrimary(): ast.Expr {
     if (match(TokenType.TRUE) || match(TokenType.FALSE)) {
       return ast.literalExpr({
@@ -786,6 +878,9 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
         type: ast.ByteType
       })
     }
+    if (checkStructPtrCast()) {
+      return castPrimary()
+    }
     if (match(TokenType.IDENTIFIER)) {
       return ast.variableExpr({
         name: previous()
@@ -830,30 +925,7 @@ export function parse(tokens: Token[], reportError: ReportError): ast.Context {
     }
 
     if (check(TokenType.INT) || check(TokenType.FLOAT) || check(TokenType.BYTE) || check(TokenType.BOOL)) {
-      // cast expression
-      // TODO: allow pointers to arrays
-      const castType = type()
-      switch (castType.category) {
-        case ast.TypeCategory.INT:
-        case ast.TypeCategory.FLOAT:
-        case ast.TypeCategory.BYTE:
-        case ast.TypeCategory.BOOL:
-        case ast.TypeCategory.POINTER: {
-          break
-        }
-        default: {
-          throw parseError("Cannot cast to this type.")
-        }
-      }
-      consume(TokenType.LEFT_PAREN, "Expect '(' after type in cast expression.")
-      const paren = previous()
-      const value = expression()
-      consume(TokenType.RIGHT_PAREN, "Expect ')' after cast expression.")
-      return ast.castExpr({
-        token: paren,
-        type: castType,
-        value
-      })
+      return castPrimary()
     }
 
     if (match(TokenType.LEN)) {

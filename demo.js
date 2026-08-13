@@ -101,20 +101,22 @@
     TokenType2[TokenType2["CONTINUE"] = 41] = "CONTINUE";
     TokenType2[TokenType2["DEF"] = 42] = "DEF";
     TokenType2[TokenType2["ELSE"] = 43] = "ELSE";
-    TokenType2[TokenType2["FALSE"] = 44] = "FALSE";
-    TokenType2[TokenType2["FOR"] = 45] = "FOR";
-    TokenType2[TokenType2["FLOAT"] = 46] = "FLOAT";
-    TokenType2[TokenType2["IF"] = 47] = "IF";
-    TokenType2[TokenType2["INT"] = 48] = "INT";
-    TokenType2[TokenType2["LEN"] = 49] = "LEN";
-    TokenType2[TokenType2["PRINT"] = 50] = "PRINT";
-    TokenType2[TokenType2["RETURN"] = 51] = "RETURN";
-    TokenType2[TokenType2["STRUCT"] = 52] = "STRUCT";
-    TokenType2[TokenType2["TRUE"] = 53] = "TRUE";
-    TokenType2[TokenType2["VAR"] = 54] = "VAR";
-    TokenType2[TokenType2["VOID"] = 55] = "VOID";
-    TokenType2[TokenType2["WHILE"] = 56] = "WHILE";
-    TokenType2[TokenType2["EOF"] = 57] = "EOF";
+    TokenType2[TokenType2["EXPORT"] = 44] = "EXPORT";
+    TokenType2[TokenType2["FALSE"] = 45] = "FALSE";
+    TokenType2[TokenType2["FOR"] = 46] = "FOR";
+    TokenType2[TokenType2["FLOAT"] = 47] = "FLOAT";
+    TokenType2[TokenType2["IF"] = 48] = "IF";
+    TokenType2[TokenType2["IMPORT"] = 49] = "IMPORT";
+    TokenType2[TokenType2["INT"] = 50] = "INT";
+    TokenType2[TokenType2["LEN"] = 51] = "LEN";
+    TokenType2[TokenType2["PRINT"] = 52] = "PRINT";
+    TokenType2[TokenType2["RETURN"] = 53] = "RETURN";
+    TokenType2[TokenType2["STRUCT"] = 54] = "STRUCT";
+    TokenType2[TokenType2["TRUE"] = 55] = "TRUE";
+    TokenType2[TokenType2["VAR"] = 56] = "VAR";
+    TokenType2[TokenType2["VOID"] = 57] = "VOID";
+    TokenType2[TokenType2["WHILE"] = 58] = "WHILE";
+    TokenType2[TokenType2["EOF"] = 59] = "EOF";
     return TokenType2;
   })(TokenType || {});
   var TokenPattern = {
@@ -162,20 +164,22 @@
     [41 /* CONTINUE */]: /continue/y,
     [42 /* DEF */]: /def/y,
     [43 /* ELSE */]: /else/y,
-    [44 /* FALSE */]: /false/y,
-    [45 /* FOR */]: /for/y,
-    [46 /* FLOAT */]: /float/y,
-    [47 /* IF */]: /if/y,
-    [48 /* INT */]: /int/y,
-    [49 /* LEN */]: /len/y,
-    [50 /* PRINT */]: /print/y,
-    [51 /* RETURN */]: /return/y,
-    [52 /* STRUCT */]: /struct/y,
-    [53 /* TRUE */]: /true/y,
-    [54 /* VAR */]: /var/y,
-    [55 /* VOID */]: /void/y,
-    [56 /* WHILE */]: /while/y,
-    [57 /* EOF */]: /$/y
+    [44 /* EXPORT */]: /export/y,
+    [45 /* FALSE */]: /false/y,
+    [46 /* FOR */]: /for/y,
+    [47 /* FLOAT */]: /float/y,
+    [48 /* IF */]: /if/y,
+    [49 /* IMPORT */]: /import/y,
+    [50 /* INT */]: /int/y,
+    [51 /* LEN */]: /len/y,
+    [52 /* PRINT */]: /print/y,
+    [53 /* RETURN */]: /return/y,
+    [54 /* STRUCT */]: /struct/y,
+    [55 /* TRUE */]: /true/y,
+    [56 /* VAR */]: /var/y,
+    [57 /* VOID */]: /void/y,
+    [58 /* WHILE */]: /while/y,
+    [59 /* EOF */]: /$/y
   };
 
   // src/scanner.ts
@@ -259,7 +263,7 @@ ${ptr}` : snippet;
               const lexeme = m[0];
               if (t === 0 /* IDENTIFIER */) {
                 keyword:
-                  for (let k = 38 /* BYTE */; k <= 56 /* WHILE */; k++) {
+                  for (let k = 38 /* BYTE */; k <= 58 /* WHILE */; k++) {
                     const keywordMatch = match(source, current, TokenPattern[k]);
                     if (keywordMatch !== null && keywordMatch[0] === lexeme) {
                       t = k;
@@ -302,7 +306,7 @@ ${ptr}` : snippet;
         reportError(line, `Unexpected character '${source.charAt(current)}'.`);
         current++;
       }
-    tokens.push(new Token(57 /* EOF */, "", null, current, source));
+    tokens.push(new Token(59 /* EOF */, "", null, current, source));
     return tokens;
   }
 
@@ -434,11 +438,12 @@ ${ptr}` : snippet;
       resolvedType: null
     };
   }
-  function literalExpr({ value, type }) {
+  function literalExpr({ value, type, sourceLexeme }) {
     return {
       kind: 10 /* LITERAL_EXPR */,
       value,
       type,
+      sourceLexeme: sourceLexeme != null ? sourceLexeme : null,
       resolvedType: null
     };
   }
@@ -625,6 +630,12 @@ ${ptr}` : snippet;
     if (from.category === 6 /* POINTER */ && to.category === 6 /* POINTER */) {
       return true;
     }
+    if (from.category === 5 /* INT */ && to.category === 6 /* POINTER */) {
+      return true;
+    }
+    if (from.category === 6 /* POINTER */ && to.category === 5 /* INT */) {
+      return true;
+    }
     return isEqual(from, to);
   }
   function canCoerce(from, to) {
@@ -780,7 +791,7 @@ ${ptr}` : snippet;
       isLiveAtEnd: null
     };
   }
-  function functionStmt({ name, params, returnType, block, scope, symbol }) {
+  function functionStmt({ name, params, returnType, block, scope, symbol, isExported }) {
     return {
       kind: 16 /* FUNCTION_STMT */,
       name,
@@ -790,17 +801,21 @@ ${ptr}` : snippet;
         block,
         scope
       },
+      hostModule: null,
+      isExported: isExported != null ? isExported : false,
       symbol,
       hoistedLocals: null
     };
   }
-  function importedFunctionStmt({ name, params, returnType, symbol }) {
+  function importedFunctionStmt({ name, params, returnType, symbol, hostModule }) {
     return {
       kind: 16 /* FUNCTION_STMT */,
       name,
       params,
       returnType,
       body: null,
+      hostModule: hostModule != null ? hostModule : null,
+      isExported: false,
       symbol,
       hoistedLocals: null
     };
@@ -911,6 +926,10 @@ ${ptr}` : snippet;
           {
             name: fakeToken(0 /* IDENTIFIER */, "dst"),
             type: ptrType(ByteType)
+          },
+          {
+            name: fakeToken(0 /* IDENTIFIER */, "numBytes"),
+            type: IntType
           }
         ],
         returnType: VoidType,
@@ -929,8 +948,29 @@ ${ptr}` : snippet;
         symbol: null
       });
       sqrt.symbol = this.functionSymbol(sqrt);
+      const heapEnd = importedFunctionStmt({
+        name: fakeToken(0 /* IDENTIFIER */, "__heap_end__"),
+        params: [],
+        returnType: IntType,
+        symbol: null
+      });
+      heapEnd.symbol = this.functionSymbol(heapEnd);
+      const grow = importedFunctionStmt({
+        name: fakeToken(0 /* IDENTIFIER */, "__grow_heap__"),
+        params: [
+          {
+            name: fakeToken(0 /* IDENTIFIER */, "numPages"),
+            type: IntType
+          }
+        ],
+        returnType: IntType,
+        symbol: null
+      });
+      grow.symbol = this.functionSymbol(grow);
       this.global.define(memcpy.name.lexeme, memcpy.symbol);
       this.global.define(sqrt.name.lexeme, sqrt.symbol);
+      this.global.define(heapEnd.name.lexeme, heapEnd.symbol);
+      this.global.define(grow.name.lexeme, grow.symbol);
     }
     variableSymbol(node, isGlobal) {
       return {
@@ -1155,6 +1195,11 @@ ${ptr}` : snippet;
       case 16 /* FUNCTION_STMT */: {
         const op = node;
         out += "(";
+        if (op.hostModule !== null) {
+          out += "import ";
+        } else if (op.isExported) {
+          out += "export ";
+        }
         out += `def ${op.name.lexeme} `;
         out += "(";
         op.params.forEach((param, i) => {
@@ -1306,12 +1351,12 @@ ${ptr}` : snippet;
         }
         switch (peek().type) {
           case 42 /* DEF */:
-          case 52 /* STRUCT */:
-          case 54 /* VAR */:
-          case 47 /* IF */:
-          case 50 /* PRINT */:
-          case 51 /* RETURN */:
-          case 56 /* WHILE */: {
+          case 54 /* STRUCT */:
+          case 56 /* VAR */:
+          case 48 /* IF */:
+          case 52 /* PRINT */:
+          case 53 /* RETURN */:
+          case 58 /* WHILE */: {
             return;
           }
           default: {
@@ -1322,18 +1367,64 @@ ${ptr}` : snippet;
       }
     }
     function isAtEnd() {
-      return peek().type === 57 /* EOF */;
+      return peek().type === 59 /* EOF */;
     }
     function topDecl() {
+      if (match2(49 /* IMPORT */)) {
+        consume(42 /* DEF */, "Expect 'def' after 'import'.");
+        return importDecl();
+      }
+      if (match2(44 /* EXPORT */)) {
+        consume(42 /* DEF */, "Expect 'def' after 'export'.");
+        return funDecl(true);
+      }
       if (match2(42 /* DEF */))
-        return funDecl();
-      if (match2(52 /* STRUCT */))
+        return funDecl(false);
+      if (match2(54 /* STRUCT */))
         return structDecl();
-      if (match2(54 /* VAR */))
+      if (match2(56 /* VAR */))
         return varDecl();
       throw parseError("Only variable declarations and function definitions allowed at the top-level.");
     }
-    function funDecl() {
+    function importDecl() {
+      const name = consume(0 /* IDENTIFIER */, "Expect identifier after 'def'.");
+      consume(7 /* LEFT_PAREN */, "Expect '(' after function name.");
+      const params = [];
+      while (!check(8 /* RIGHT_PAREN */) && !isAtEnd()) {
+        if (params.length > 0) {
+          consume(13 /* COMMA */, "Missing comma after parameter.");
+        }
+        const paramName = consume(0 /* IDENTIFIER */, "Expect identifier.");
+        const paramType = type();
+        params.push({
+          name: paramName,
+          type: paramType
+        });
+      }
+      consume(8 /* RIGHT_PAREN */, "Expect ')' after parameters.");
+      let returnType = VoidType;
+      if (!check(15 /* SEMICOLON */)) {
+        returnType = type();
+      }
+      consume(15 /* SEMICOLON */, "Expect ';' after import declaration.");
+      const node = importedFunctionStmt({
+        name,
+        params,
+        returnType,
+        symbol: null,
+        hostModule: "env"
+      });
+      const outerScope = peekScope();
+      if (outerScope.hasDirect(name.lexeme)) {
+        throw parseErrorForToken(name, `'${name.lexeme}' is already declared in this scope.`);
+      } else {
+        const symbol = context.functionSymbol(node);
+        outerScope.define(name.lexeme, symbol);
+        node.symbol = symbol;
+      }
+      return node;
+    }
+    function funDecl(isExported) {
       const name = consume(0 /* IDENTIFIER */, "Expect identifier after 'def'.");
       consume(7 /* LEFT_PAREN */, "Expect '(' after function name.");
       const params = [];
@@ -1371,7 +1462,8 @@ ${ptr}` : snippet;
         returnType,
         block: statements,
         scope,
-        symbol: null
+        symbol: null,
+        isExported
       });
       const outerScope = peekScope();
       if (outerScope.hasDirect(name.lexeme)) {
@@ -1445,19 +1537,19 @@ ${ptr}` : snippet;
       return node;
     }
     function statement() {
-      if (match2(47 /* IF */)) {
+      if (match2(48 /* IF */)) {
         return ifStmt2();
       }
-      if (match2(50 /* PRINT */)) {
+      if (match2(52 /* PRINT */)) {
         return printStmt2();
       }
-      if (match2(56 /* WHILE */)) {
+      if (match2(58 /* WHILE */)) {
         return whileStmt2();
       }
-      if (match2(45 /* FOR */)) {
+      if (match2(46 /* FOR */)) {
         return forStmt();
       }
-      if (match2(51 /* RETURN */)) {
+      if (match2(53 /* RETURN */)) {
         return returnStmt2();
       }
       if (match2(9 /* LEFT_BRACE */)) {
@@ -1538,7 +1630,7 @@ ${ptr}` : snippet;
       let initializer = null;
       if (match2(15 /* SEMICOLON */)) {
         initializer = null;
-      } else if (match2(54 /* VAR */)) {
+      } else if (match2(56 /* VAR */)) {
         initializer = varDecl();
       } else {
         initializer = expressionStmt2();
@@ -1579,7 +1671,7 @@ ${ptr}` : snippet;
       const statements = [];
       while (!check(10 /* RIGHT_BRACE */) && !isAtEnd()) {
         try {
-          if (match2(54 /* VAR */)) {
+          if (match2(56 /* VAR */)) {
             const varStmt2 = varDecl();
             statements.push(varStmt2);
           } else {
@@ -1609,9 +1701,9 @@ ${ptr}` : snippet;
           elementType,
           length
         };
-      } else if (match2(48 /* INT */)) {
+      } else if (match2(50 /* INT */)) {
         baseType = IntType;
-      } else if (match2(46 /* FLOAT */)) {
+      } else if (match2(47 /* FLOAT */)) {
         baseType = FloatType;
       } else if (match2(38 /* BYTE */)) {
         baseType = ByteType;
@@ -1893,10 +1985,44 @@ ${ptr}` : snippet;
       }
       return expr;
     }
+    function checkStructPtrCast() {
+      if (!check(0 /* IDENTIFIER */)) {
+        return false;
+      }
+      let i = current + 1;
+      while (i < tokens.length && tokens[i].type === 16 /* TILDE */) {
+        i++;
+      }
+      return i > current + 1 && i < tokens.length && tokens[i].type === 7 /* LEFT_PAREN */;
+    }
+    function castPrimary() {
+      const castType = type();
+      switch (castType.category) {
+        case 5 /* INT */:
+        case 4 /* FLOAT */:
+        case 2 /* BYTE */:
+        case 1 /* BOOL */:
+        case 6 /* POINTER */: {
+          break;
+        }
+        default: {
+          throw parseError("Cannot cast to this type.");
+        }
+      }
+      consume(7 /* LEFT_PAREN */, "Expect '(' after type in cast expression.");
+      const paren = previous();
+      const value = expression();
+      consume(8 /* RIGHT_PAREN */, "Expect ')' after cast expression.");
+      return castExpr({
+        token: paren,
+        type: castType,
+        value
+      });
+    }
     function exprPrimary() {
-      if (match2(53 /* TRUE */) || match2(44 /* FALSE */)) {
+      if (match2(55 /* TRUE */) || match2(45 /* FALSE */)) {
         return literalExpr({
-          value: previous().type === 53 /* TRUE */ ? true : false,
+          value: previous().type === 55 /* TRUE */ ? true : false,
           type: BoolType
         });
       }
@@ -1909,7 +2035,8 @@ ${ptr}` : snippet;
       if (match2(3 /* NUMBER_DECIMAL */)) {
         return literalExpr({
           value: previous().literal,
-          type: FloatType
+          type: FloatType,
+          sourceLexeme: previous().lexeme
         });
       }
       if (match2(4 /* NUMBER_HEX */)) {
@@ -1941,6 +2068,9 @@ ${ptr}` : snippet;
           value: codec.encodeASCIIChar(c),
           type: ByteType
         });
+      }
+      if (checkStructPtrCast()) {
+        return castPrimary();
       }
       if (match2(0 /* IDENTIFIER */)) {
         return variableExpr({
@@ -1983,31 +2113,10 @@ ${ptr}` : snippet;
         consume(12 /* RIGHT_BRACKET */, "Expect ']' after list literal.");
         return listExpr({ bracket, values });
       }
-      if (check(48 /* INT */) || check(46 /* FLOAT */) || check(38 /* BYTE */) || check(39 /* BOOL */)) {
-        const castType = type();
-        switch (castType.category) {
-          case 5 /* INT */:
-          case 4 /* FLOAT */:
-          case 2 /* BYTE */:
-          case 1 /* BOOL */:
-          case 6 /* POINTER */: {
-            break;
-          }
-          default: {
-            throw parseError("Cannot cast to this type.");
-          }
-        }
-        consume(7 /* LEFT_PAREN */, "Expect '(' after type in cast expression.");
-        const paren = previous();
-        const value = expression();
-        consume(8 /* RIGHT_PAREN */, "Expect ')' after cast expression.");
-        return castExpr({
-          token: paren,
-          type: castType,
-          value
-        });
+      if (check(50 /* INT */) || check(47 /* FLOAT */) || check(38 /* BYTE */) || check(39 /* BOOL */)) {
+        return castPrimary();
       }
-      if (match2(49 /* LEN */)) {
+      if (match2(51 /* LEN */)) {
         consume(7 /* LEFT_PAREN */, "Expect '(' before len expression.");
         const value = expression();
         consume(8 /* RIGHT_PAREN */, "Expect ')' after len expression.");
@@ -2097,7 +2206,7 @@ ${ptr}` : snippet;
         const canCoerce2 = canCoerce(node.resolvedType, type) || isNumberLiteral(node) && canCoerceNumberLiteral(node.value, type);
         if (canCoerce2) {
           out = castExpr({
-            token: fakeToken2(57 /* EOF */, ""),
+            token: fakeToken2(59 /* EOF */, ""),
             type,
             value: node
           });
@@ -2144,13 +2253,17 @@ ${ptr}` : snippet;
             }
             case "!=":
             case "==": {
-              const lct = getLowestCommonNumeric(op.left.resolvedType, op.right.resolvedType);
-              if (lct) {
-                op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator);
-                op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator);
-              } else if (!isEqual(op.left.resolvedType, op.right.resolvedType)) {
-                const leftTypeStr = typeToString(op.left.resolvedType);
-                const rightTypeStr = typeToString(op.right.resolvedType);
+              const leftTypeStr = typeToString(op.left.resolvedType);
+              const rightTypeStr = typeToString(op.right.resolvedType);
+              if (isScalar(op.left.resolvedType) && isScalar(op.right.resolvedType)) {
+                const lct = getLowestCommonNumeric(op.left.resolvedType, op.right.resolvedType);
+                if (lct) {
+                  op.left = resolveNodeWithCoercion(op.left, isLiveAtEnd, lct, op.operator);
+                  op.right = resolveNodeWithCoercion(op.right, isLiveAtEnd, lct, op.operator);
+                } else if (!isEqual(op.left.resolvedType, op.right.resolvedType)) {
+                  resolveError(op.operator, `Cannot compare ${leftTypeStr} to ${rightTypeStr}.`);
+                }
+              } else {
                 resolveError(op.operator, `Cannot compare ${leftTypeStr} to ${rightTypeStr}.`);
               }
               op.resolvedType = BoolType;
@@ -2254,6 +2367,7 @@ ${ptr}` : snippet;
         }
         case 3 /* CAST_EXPR */: {
           const op = node;
+          op.type = resolveType(op.type);
           resolveNode(op.value, isLiveAtEnd);
           if (!canCast(op.value.resolvedType, op.type)) {
             resolveError(op.token, `Cannot cast from ${typeToString(op.value.resolvedType)} to ${typeToString(op.type)}.`);
@@ -2431,7 +2545,7 @@ ${ptr}` : snippet;
                     category: 6 /* POINTER */,
                     elementType: op.value.resolvedType
                   };
-                } else if (op.value.kind === 7 /* INDEX_EXPR */) {
+                } else if (op.value.kind === 7 /* INDEX_EXPR */ || op.value.kind === 5 /* DOT_EXPR */ || op.value.kind === 4 /* DEREF_EXPR */) {
                   op.resolvedType = {
                     category: 6 /* POINTER */,
                     elementType: op.value.resolvedType
@@ -2732,11 +2846,28 @@ ${cyclicVar.name.lineStr()}`);
 
   // src/backend.ts
   var codec2 = new UTF8Codec();
-  var STACK_TOP_BYTE_OFFSET = 512 * 1024;
-  var DATA_TOP_BYTE_OFFSET = 1024 * 1024;
+  var STACK_TOP_BYTE_OFFSET = 4 * 1024 * 1024;
+  var DATA_TOP_BYTE_OFFSET = 8 * 1024 * 1024;
   var INITIAL_PAGES = 8 * 1024 * 1024 / (64 * 1024);
   function escapeString(str) {
     return str.replace(/'/g, "'").replace(/\\/g, "\\\\").replace(/"/g, '"');
+  }
+  function formatFloatLexeme(lexeme) {
+    let out = lexeme;
+    if (out.indexOf(".") >= 0) {
+      let end = out.length;
+      while (end > 0 && out.charAt(end - 1) === "0") {
+        end--;
+      }
+      if (end > 0 && out.charAt(end - 1) === ".") {
+        end--;
+      }
+      out = out.substring(0, end);
+    }
+    if (out.length === 0) {
+      out = "0";
+    }
+    return out;
   }
   function registerType(type) {
     switch (type.category) {
@@ -2774,7 +2905,7 @@ ${cyclicVar.name.lineStr()}`);
     const type = symbol.kind === 2 /* PARAM */ ? symbol.param.type : symbol.node.type;
     return type !== null && isScalar(type);
   }
-  var DEBUG_COMMENTS = true;
+  var DEBUG_COMMENTS = false;
   function emit(context) {
     var _a, _b;
     const globalLocs = /* @__PURE__ */ new Map();
@@ -3025,6 +3156,9 @@ ${cyclicVar.name.lineStr()}`);
       }
     }
     function emitDebugComments(node) {
+      if (!DEBUG_COMMENTS) {
+        return;
+      }
       switch (node.kind) {
         case 1 /* BINARY_EXPR */:
         case 3 /* CAST_EXPR */:
@@ -3043,7 +3177,7 @@ ${cyclicVar.name.lineStr()}`);
       debugLine(``);
     }
     function visit(node, exprMode = 1 /* RVALUE */) {
-      var _a2, _b2, _c, _d, _e, _f;
+      var _a2, _b2, _c, _d, _e, _f, _g;
       if (skip.has(node)) {
         return;
       }
@@ -3051,10 +3185,12 @@ ${cyclicVar.name.lineStr()}`);
       switch (node.kind) {
         case 0 /* ASSIGN_EXPR */: {
           const op = node;
-          op.operator.lineStr(true).split("\n").forEach((l) => {
-            debugLine(`;; ${l}`);
-          });
-          debugLine(``);
+          if (DEBUG_COMMENTS) {
+            op.operator.lineStr(true).split("\n").forEach((l) => {
+              debugLine(`;; ${l}`);
+            });
+            debugLine(``);
+          }
           if (op.left.kind === 13 /* VARIABLE_EXPR */) {
             const symbol = op.left.resolvedSymbol;
             visit(op.right);
@@ -3292,7 +3428,8 @@ ${cyclicVar.name.lineStr()}`);
                   break;
                 }
                 case 1 /* BOOL */:
-                case 5 /* INT */: {
+                case 5 /* INT */:
+                case 6 /* POINTER */: {
                   break;
                 }
                 case 4 /* FLOAT */: {
@@ -3323,7 +3460,7 @@ ${cyclicVar.name.lineStr()}`);
               break;
             }
             case 6 /* POINTER */: {
-              if (((_e = op.value.resolvedType) == null ? void 0 : _e.category) === 6 /* POINTER */) {
+              if (((_e = op.value.resolvedType) == null ? void 0 : _e.category) === 6 /* POINTER */ || ((_f = op.value.resolvedType) == null ? void 0 : _f.category) === 5 /* INT */) {
               } else {
                 throw new Error(`Unexpected type ${typeToString(op.type)} for cast source`);
               }
@@ -3351,10 +3488,12 @@ ${cyclicVar.name.lineStr()}`);
         }
         case 5 /* DOT_EXPR */: {
           const op = node;
-          op.dot.lineStr(true).split("\n").forEach((l) => {
-            debugLine(`;; ${l}`);
-          });
-          debugLine(``);
+          if (DEBUG_COMMENTS) {
+            op.dot.lineStr(true).split("\n").forEach((l) => {
+              debugLine(`;; ${l}`);
+            });
+            debugLine(``);
+          }
           const memberType = op.resolvedType;
           const structType = op.callee.resolvedType;
           if ((structType == null ? void 0 : structType.category) !== 7 /* STRUCT */) {
@@ -3389,10 +3528,12 @@ ${cyclicVar.name.lineStr()}`);
         }
         case 7 /* INDEX_EXPR */: {
           const op = node;
-          op.bracket.lineStr(true).split("\n").forEach((l) => {
-            debugLine(`;; ${l}`);
-          });
-          debugLine(``);
+          if (DEBUG_COMMENTS) {
+            op.bracket.lineStr(true).split("\n").forEach((l) => {
+              debugLine(`;; ${l}`);
+            });
+            debugLine(``);
+          }
           const elementType = op.resolvedType;
           visit(op.callee, 0 /* LVALUE */);
           visit(op.index);
@@ -3483,7 +3624,11 @@ ${cyclicVar.name.lineStr()}`);
               break;
             }
             case 4 /* FLOAT */: {
-              line(`f32.const ${op.value}`);
+              if (op.sourceLexeme !== null) {
+                line(`f32.const ${formatFloatLexeme(op.sourceLexeme)}`);
+              } else {
+                line(`f32.const ${op.value}`);
+              }
               break;
             }
             default: {
@@ -3549,7 +3694,9 @@ ${cyclicVar.name.lineStr()}`);
                   }
                   break;
                 }
-                case 7 /* INDEX_EXPR */: {
+                case 7 /* INDEX_EXPR */:
+                case 5 /* DOT_EXPR */:
+                case 4 /* DEREF_EXPR */: {
                   visit(op.value, 0 /* LVALUE */);
                   break;
                 }
@@ -3604,8 +3751,8 @@ ${cyclicVar.name.lineStr()}`);
             break;
           }
           localLocs = /* @__PURE__ */ new Map();
-          if (op.name.lexeme === "main") {
-            line(`(func ${wasmId("main")} (export "main")`);
+          if (op.name.lexeme === "main" || op.isExported) {
+            line(`(func ${wasmId(op.name.lexeme)} (export "${op.name.lexeme}")`);
           } else {
             line(`(func ${wasmId(op.name.lexeme)}`);
           }
@@ -3640,7 +3787,7 @@ ${cyclicVar.name.lineStr()}`);
                 }
               };
               op.body.scope.forEach((_, local) => allocateRegisterOrStackLoc(local));
-              (_f = op.hoistedLocals) == null ? void 0 : _f.forEach((local) => allocateRegisterOrStackLoc(local));
+              (_g = op.hoistedLocals) == null ? void 0 : _g.forEach((local) => allocateRegisterOrStackLoc(local));
               line(`global.get ${wasmId("__stack_ptr__")}`);
               line(`local.set ${wasmId("__base_ptr__")}`);
               line(`global.get ${wasmId("__stack_ptr__")}`);
@@ -3796,6 +3943,21 @@ ${cyclicVar.name.lineStr()}`);
       line(`(import "io" "putf" (func ${wasmId("__putf__")} (param f32)))`);
       line(`(import "io" "puti" (func ${wasmId("__puti__")} (param i32)))`);
       line(`(import "io" "flush" (func ${wasmId("__flush__")}))`);
+      context.topLevelStatements.forEach((statement) => {
+        if (statement.kind === 16 /* FUNCTION_STMT */) {
+          const fn = statement;
+          if (fn.hostModule !== null) {
+            let sig = "";
+            fn.params.forEach((param) => {
+              sig += ` (param ${registerType(param.type)})`;
+            });
+            if (!isEqual(fn.returnType, VoidType)) {
+              sig += ` (result ${registerType(fn.returnType)})`;
+            }
+            line(`(import "${fn.hostModule}" "${fn.name.lexeme}" (func ${wasmId(fn.name.lexeme)}${sig}))`);
+          }
+        }
+      });
       line(`(memory $memory ${INITIAL_PAGES})`);
       line(`(global ${wasmId("__stack_ptr__")} (mut i32) i32.const ${STACK_TOP_BYTE_OFFSET})`);
       let globalByteOffset = DATA_TOP_BYTE_OFFSET;
@@ -3888,6 +4050,19 @@ ${cyclicVar.name.lineStr()}`);
         line(`f32.sqrt`);
       }
       line(`)`);
+      line(`(func ${wasmId("__heap_end__")} (result i32)`);
+      {
+        line(`memory.size`);
+        line(`i32.const 65536`);
+        line(`i32.mul`);
+      }
+      line(`)`);
+      line(`(func ${wasmId("__grow_heap__")} (param $numPages i32) (result i32)`);
+      {
+        line(`local.get $numPages`);
+        line(`memory.grow`);
+      }
+      line(`)`);
       context.topLevelStatements.forEach((statement) => {
         visit(statement);
       });
@@ -3959,10 +4134,8 @@ ${cyclicVar.name.lineStr()}`);
           clearTimeout(timeoutID);
         }
         timeoutID = setTimeout(wrapped, wait);
-        console.log("debounce");
         return;
       }
-      console.log("exec");
       clearTimeout(timeoutID);
       timeoutID = -1;
       cb(arguments);

@@ -1,0 +1,1681 @@
+// backend.puff
+// WAT code generator, ported from src/backend.ts (with DEBUG_COMMENTS off).
+// Emits byte-identical output to the reference compiler.
+//
+////////////////////////////////////////////////////
+// Puff memory layout
+////////////////////////////////////////////////////
+// ----------------------- 0
+//
+// -----------------------
+//            ^ grows toward zero
+//        stack (locals)
+// ----------------------- STACK_TOP_BYTE_OFFSET (4MB)
+//        data (globals)
+// ----------------------- DATA_TOP_BYTE_OFFSET (8MB)
+//
+// ----------------------- max byte offset
+////////////////////////////////////////////////////
+
+var STACK_TOP_BYTE_OFFSET = 4194304;
+var DATA_TOP_BYTE_OFFSET = 8388608;
+var INITIAL_PAGES = 128;
+
+var EM_LVALUE = 0;
+var EM_RVALUE = 1;
+
+// The generated WAT output.
+var gOut Buf~ = bufNewWithCap(1048576);
+
+var eIndent = 0;
+var eNextLabelID = 0;
+// Loop label stack: 3 ints per entry (outer, inner, increment; -1 = none).
+var eLoopStack Vec~ = vecNew();
+// Locations of locals are stored on Symbol via localLoc/hasLocalLoc.
+// Locations of globals are stored on Symbol via globalLoc/hasGlobalLoc.
+// Locations of string literals are stored on the literal node via strLoc.
+
+def wInd() {
+  for (var i = 0; i < eIndent; i = i + 1) {
+    bufPushChar(gOut, 32);
+    bufPushChar(gOut, 32);
+  }
+}
+
+def wRaw(p byte~, n int) {
+  bufPushBytes(gOut, p, n);
+}
+
+def wStr(s Str~) {
+  bufPushBytes(gOut, s~.data, s~.count);
+}
+
+def wInt(x int) {
+  bufPushInt(gOut, x);
+}
+
+def wEnd() {
+  bufPushChar(gOut, 10);
+}
+
+def wLine(p byte~, n int) {
+  wInd();
+  wRaw(p, n);
+  wEnd();
+}
+
+// Emits a token's lexeme.
+def wLexeme(tok Token~) {
+  bufPushBytes(gOut, tok~.lexPtr, tok~.lexLen);
+}
+
+// Formats a float literal for WAT output from its source lexeme, e.g.
+// "5.50" => "5.5", "5." => "5", "3.14" => "3.14".
+// Mirrors formatFloatLexeme in src/backend.ts.
+def wFloatLexeme(lexeme Str~) {
+  var hasDot = false;
+  for (var i = 0; i < lexeme~.count; i = i + 1) {
+    if (int(strGet(lexeme, i)) == 46) {
+      hasDot = true;
+    }
+  }
+  var end = lexeme~.count;
+  if (hasDot) {
+    while (end > 0 && int(strGet(lexeme, end - 1)) == 48) {
+      end = end - 1;
+    }
+    if (end > 0 && int(strGet(lexeme, end - 1)) == 46) {
+      end = end - 1;
+    }
+  }
+  if (end == 0) {
+    bufPushChar(gOut, 48); // "0"
+  } else {
+    bufPushBytes(gOut, lexeme~.data, end);
+  }
+}
+
+// Returns true if values of the given type are represented as f32 on the
+// WASM stack ("registers"), false for i32. Mirrors registerType.
+def regIsF32(t Type~) bool {
+  if (t~.category == TC_FLOAT) {
+    return true;
+  }
+  if (t~.category == TC_ERROR || t~.category == TC_VOID) {
+    die(93); // unhandled type for WASM backend
+  }
+  return false;
+}
+
+def wRegType(isF32 bool) {
+  if (isF32) {
+    var s0 = "f32";
+    wRaw(&s0[0], len(s0));
+  } else {
+    var s1 = "i32";
+    wRaw(&s1[0], len(s1));
+  }
+}
+
+def isVariableInRegister(symbol Symbol~) bool {
+  if (symbol~.isAddressTaken) {
+    return false;
+  }
+  var type = symbolValueType(symbol);
+  return int(type) != 0 && isScalar(type);
+}
+
+// The type of a variable or param symbol.
+def symbolValueType(symbol Symbol~) Type~ {
+  if (symbol~.kind == SK_PARAM) {
+    return symbol~.param~.type;
+  }
+  return symbol~.node~.typeA;
+}
+
+def symbolName(symbol Symbol~) Token~ {
+  if (symbol~.kind == SK_PARAM) {
+    return symbol~.param~.name;
+  }
+  return symbol~.node~.tokA;
+}
+
+// ---------------------------------------------------------------------------
+// Common line emitters
+// ---------------------------------------------------------------------------
+
+def oStackGet() {
+  var s = "global.get $__stack_ptr__";
+  wLine(&s[0], len(s));
+}
+
+def oStackSet() {
+  var s = "global.set $__stack_ptr__";
+  wLine(&s[0], len(s));
+}
+
+def oI32Const(x int) {
+  wInd();
+  var s = "i32.const ";
+  wRaw(&s[0], len(s));
+  wInt(x);
+  wEnd();
+}
+
+def oI32Add() {
+  var s = "i32.add";
+  wLine(&s[0], len(s));
+}
+
+def oI32Sub() {
+  var s = "i32.sub";
+  wLine(&s[0], len(s));
+}
+
+def oI32Mul() {
+  var s = "i32.mul";
+  wLine(&s[0], len(s));
+}
+
+def oCallMemcpy() {
+  var s = "call $__memcpy__";
+  wLine(&s[0], len(s));
+}
+
+def oDrop() {
+  var s = "drop";
+  wLine(&s[0], len(s));
+}
+
+def oBasePtrGet() {
+  var s = "local.get $__base_ptr__";
+  wLine(&s[0], len(s));
+}
+
+def oTee(isF32 bool) {
+  var op = "local.tee $__tee_";
+  wInd();
+  wRaw(&op[0], len(op));
+  wRegType(isF32);
+  var s = "__";
+  wRaw(&s[0], len(s));
+  wEnd();
+}
+
+def oGetTee(isF32 bool) {
+  var op = "local.get $__tee_";
+  wInd();
+  wRaw(&op[0], len(op));
+  wRegType(isF32);
+  var s = "__";
+  wRaw(&s[0], len(s));
+  wEnd();
+}
+
+// Emit code to duplicate the value at the top of the stack.
+// PRECOND: inside a function.
+def emitDupTop(isF32 bool) {
+  oTee(isF32);
+  oGetTee(isF32);
+}
+
+// Emit code to swap stack[n] and stack[n-1].
+// PRECOND: inside a function.
+def emitSwapTop(topIsF32 bool, secondIsF32 bool) {
+  var s0 = "local.set $__swapa_";
+  wInd();
+  wRaw(&s0[0], len(s0));
+  wRegType(topIsF32);
+  var u = "__";
+  wRaw(&u[0], len(u));
+  wEnd();
+  var s1 = "local.set $__swapb_";
+  wInd();
+  wRaw(&s1[0], len(s1));
+  wRegType(secondIsF32);
+  wRaw(&u[0], len(u));
+  wEnd();
+  var s2 = "local.get $__swapa_";
+  wInd();
+  wRaw(&s2[0], len(s2));
+  wRegType(topIsF32);
+  wRaw(&u[0], len(u));
+  wEnd();
+  var s3 = "local.get $__swapb_";
+  wInd();
+  wRaw(&s3[0], len(s3));
+  wRegType(secondIsF32);
+  wRaw(&u[0], len(u));
+  wEnd();
+}
+
+// Emit code to store a scalar value to given address.
+// PRECOND: stack contains address then scalar value to store.
+def emitStoreScalar(t Type~) {
+  if (t~.category == TC_BOOL || t~.category == TC_BYTE) {
+    var s0 = "i32.store8";
+    wLine(&s0[0], len(s0));
+    return;
+  }
+  if (t~.category == TC_FLOAT) {
+    var s1 = "f32.store";
+    wLine(&s1[0], len(s1));
+    return;
+  }
+  if (t~.category == TC_INT || t~.category == TC_POINTER) {
+    var s2 = "i32.store";
+    wLine(&s2[0], len(s2));
+    return;
+  }
+  die(94); // unhandled element type for emitStoreScalar
+}
+
+// Emit code to load and return a scalar value from given address.
+def emitLoadScalar(t Type~) {
+  if (t~.category == TC_BOOL || t~.category == TC_BYTE) {
+    var s0 = "i32.load8_u";
+    wLine(&s0[0], len(s0));
+    return;
+  }
+  if (t~.category == TC_FLOAT) {
+    var s1 = "f32.load";
+    wLine(&s1[0], len(s1));
+    return;
+  }
+  if (t~.category == TC_INT || t~.category == TC_POINTER) {
+    var s2 = "i32.load";
+    wLine(&s2[0], len(s2));
+    return;
+  }
+  die(95); // unhandled type for emitLoadScalar
+}
+
+// Emit code to grow stack by sizeof(type) and adjust __stack_ptr__.
+def emitAllocStackVal(t Type~) {
+  oStackGet();
+  oI32Const(sizeOf(t));
+  oI32Sub();
+  oStackSet();
+}
+
+// Emit code to:
+// 1. push a value of the given type to the in-memory stack
+// 2. return the new stack ptr, which points to the pushed value
+// PRECOND: Address of value to push is top item of WASM stack.
+def emitPushMem(t Type~) {
+  emitAllocStackVal(t);
+  oStackGet();
+  oI32Const(sizeOf(t));
+  oCallMemcpy();
+  oStackGet();
+}
+
+// Emit code to:
+// 1. push a scalar value of the given type to the in-memory stack
+// 2. return the new stack ptr, which points to the pushed value
+// PRECOND: Value is stored in the tee register for the type.
+def emitPushScalarFromTee(t Type~) {
+  emitAllocStackVal(t);
+  oStackGet();
+  oGetTee(regIsF32(t));
+  emitStoreScalar(t);
+  oStackGet();
+}
+
+// Emit code to compute the address of a local or global variable.
+def emitLoc(symbol Symbol~) {
+  if (symbol~.kind == SK_VARIABLE && symbol~.isGlobal) {
+    if (symbol~.hasGlobalLoc && symbol~.globalLoc != 0) {
+      oI32Const(symbol~.globalLoc);
+    } else {
+      die(96); // cannot find global in emitLoc
+    }
+  } else {
+    if (symbol~.hasLocalLoc && symbol~.localLoc != 0) {
+      oBasePtrGet();
+      oI32Const(symbol~.localLoc);
+      oI32Sub();
+    } else {
+      die(97); // cannot find local in emitLoc
+    }
+  }
+}
+
+// Emits "global.get $<name>" / "global.set $<name>" for register globals.
+def oGlobalOp(isSet bool, name Token~) {
+  wInd();
+  if (isSet) {
+    var s0 = "global.set $";
+    wRaw(&s0[0], len(s0));
+  } else {
+    var s1 = "global.get $";
+    wRaw(&s1[0], len(s1));
+  }
+  wLexeme(name);
+  wEnd();
+}
+
+// Emits "local.get $<name>_<id>" / "local.tee $<name>_<id>" for register locals.
+def oLocalOp(isTee bool, name Token~, id int) {
+  wInd();
+  if (isTee) {
+    var s0 = "local.tee $";
+    wRaw(&s0[0], len(s0));
+  } else {
+    var s1 = "local.get $";
+    wRaw(&s1[0], len(s1));
+  }
+  wLexeme(name);
+  bufPushChar(gOut, 95); // '_'
+  wInt(id);
+  wEnd();
+}
+
+// Emit code to set the given symbol to the value currently at top of the
+// host WASM stack. Returns the set value or address of non-scalar symbol.
+def emitSetSymbol(symbol Symbol~) {
+  var type = symbolValueType(symbol);
+  if (isVariableInRegister(symbol)) {
+    if (symbol~.kind == SK_VARIABLE && symbol~.isGlobal) {
+      emitDupTop(regIsF32(type));
+      oGlobalOp(true, symbolName(symbol));
+    } else {
+      oLocalOp(true, symbolName(symbol), symbol~.id);
+    }
+  } else {
+    if (isScalar(type)) {
+      emitDupTop(regIsF32(type)); // for return value
+      emitLoc(symbol);
+      emitSwapTop(false, regIsF32(type));
+      emitStoreScalar(type);
+    } else {
+      emitLoc(symbol);
+      oI32Const(sizeOf(type));
+      oCallMemcpy();
+      emitLoc(symbol); // return dest address
+    }
+  }
+}
+
+// Emits code to get the given symbol.
+// - If symbol is scalar, returns value.
+// - If symbol is non-scalar, returns address.
+def emitGetSymbol(symbol Symbol~) {
+  var type = symbolValueType(symbol);
+  if (isVariableInRegister(symbol)) {
+    if (symbol~.kind == SK_VARIABLE && symbol~.isGlobal) {
+      oGlobalOp(false, symbolName(symbol));
+    } else {
+      oLocalOp(false, symbolName(symbol), symbol~.id);
+    }
+  } else {
+    emitLoc(symbol);
+    if (isScalar(type)) {
+      emitLoadScalar(type);
+    }
+    // else: nothing to do, return address above
+  }
+}
+
+// Emit code to print the given ASCII characters.
+def emitPrintASCIIChars(p byte~, n int) {
+  for (var i = 0; i < n; i = i + 1) {
+    oI32Const(int((p + i)~));
+    var s = "call $__putc__";
+    wLine(&s[0], len(s));
+  }
+}
+
+// Emit code to print a value of the given type.
+// PRECOND: Stack contains scalar value or address of non-scalar value.
+def emitPrintVal(t Type~) {
+  if (t~.category == TC_ARRAY) {
+    var elementType = t~.elementType;
+    if (elementType~.category == TC_BYTE) {
+      // Byte arrays are printed as string literals
+      for (var i = 0; i < t~.length; i = i + 1) {
+        var isLast = i == t~.length - 1;
+        if (!isLast) {
+          emitDupTop(false);
+        }
+        oI32Const(i * sizeOf(elementType));
+        oI32Add();
+        emitLoadScalar(elementType);
+        var s0 = "call $__putc__";
+        wLine(&s0[0], len(s0));
+      }
+    } else {
+      var sOpen = "[";
+      emitPrintASCIIChars(&sOpen[0], len(sOpen));
+      for (var j = 0; j < t~.length; j = j + 1) {
+        var isLast2 = j == t~.length - 1;
+        if (!isLast2) {
+          emitDupTop(false);
+        }
+        oI32Const(j * sizeOf(elementType));
+        oI32Add();
+        if (isScalar(elementType)) {
+          emitLoadScalar(elementType);
+          emitPrintVal(elementType);
+        } else {
+          emitPrintVal(elementType);
+        }
+        if (!isLast2) {
+          var sSep = ", ";
+          emitPrintASCIIChars(&sSep[0], len(sSep));
+        }
+      }
+      var sClose = "]";
+      emitPrintASCIIChars(&sClose[0], len(sClose));
+    }
+    return;
+  }
+  if (t~.category == TC_BYTE) {
+    // mask 24 MSB before logging
+    var s1 = "i32.const 0x000000FF";
+    wLine(&s1[0], len(s1));
+    var s2 = "i32.and";
+    wLine(&s2[0], len(s2));
+    var s3 = "call $__puti__";
+    wLine(&s3[0], len(s3));
+    return;
+  }
+  if (t~.category == TC_BOOL || t~.category == TC_INT) {
+    var s4 = "call $__puti__";
+    wLine(&s4[0], len(s4));
+    return;
+  }
+  if (t~.category == TC_FLOAT) {
+    var s5 = "call $__putf__";
+    wLine(&s5[0], len(s5));
+    return;
+  }
+  die(98); // unexpected type for print
+}
+
+// Emits "$<n>" label reference.
+def wLabel(n int) {
+  bufPushChar(gOut, 36); // '$'
+  wInt(n);
+}
+
+// ---------------------------------------------------------------------------
+// visit: expressions
+// ---------------------------------------------------------------------------
+
+def vAssignExpr(op Node~) {
+  if (op~.a~.kind == NK_VARIABLE_EXPR) {
+    var symbol = op~.a~.symbol;
+    visit(op~.b, EM_RVALUE);
+    if (int(symbol) != 0 && (symbol~.kind == SK_VARIABLE || symbol~.kind == SK_PARAM)) {
+      emitSetSymbol(symbol);
+    } else {
+      die(99); // cannot assign to function symbol
+    }
+  } else {
+    // Assigning to an index, dot, or dereference expression
+    var elementType = op~.resolvedType;
+    if (isScalar(elementType)) {
+      visit(op~.a, EM_LVALUE); // gets address of indexed element
+      visit(op~.b, EM_RVALUE); // gets value
+      oTee(regIsF32(op~.resolvedType)); // for chained assignment
+      emitStoreScalar(elementType);
+      oGetTee(regIsF32(op~.resolvedType));
+    } else {
+      visit(op~.b, EM_RVALUE); // gets address of value
+      visit(op~.a, EM_LVALUE); // gets address of indexed element
+      oTee(regIsF32(op~.resolvedType)); // for chained assignment
+      oI32Const(sizeOf(elementType));
+      oCallMemcpy();
+      oGetTee(regIsF32(op~.resolvedType));
+    }
+  }
+}
+
+def vBinaryExpr(op Node~) {
+  visit(op~.a, EM_RVALUE);
+  visit(op~.b, EM_RVALUE);
+  var leftIsFloat = op~.a~.resolvedType~.category == TC_FLOAT;
+  var leftIsByte = op~.a~.resolvedType~.category == TC_BYTE;
+  var opType = op~.tokA~.type;
+  if (opType == T_LESS) {
+    if (leftIsFloat) {
+      var s0 = "f32.lt";
+      wLine(&s0[0], len(s0));
+    } else if (leftIsByte) {
+      var s1 = "i32.lt_u";
+      wLine(&s1[0], len(s1));
+    } else {
+      var s2 = "i32.lt_s";
+      wLine(&s2[0], len(s2));
+    }
+  } else if (opType == T_LESS_EQUAL) {
+    if (leftIsFloat) {
+      var s3 = "f32.le";
+      wLine(&s3[0], len(s3));
+    } else if (leftIsByte) {
+      var s4 = "i32.le_u";
+      wLine(&s4[0], len(s4));
+    } else {
+      var s5 = "i32.le_s";
+      wLine(&s5[0], len(s5));
+    }
+  } else if (opType == T_GREATER) {
+    if (leftIsFloat) {
+      var s6 = "f32.gt";
+      wLine(&s6[0], len(s6));
+    } else if (leftIsByte) {
+      var s7 = "i32.gt_u";
+      wLine(&s7[0], len(s7));
+    } else {
+      var s8 = "i32.gt_s";
+      wLine(&s8[0], len(s8));
+    }
+  } else if (opType == T_GREATER_EQUAL) {
+    if (leftIsFloat) {
+      var s9 = "f32.ge";
+      wLine(&s9[0], len(s9));
+    } else if (leftIsByte) {
+      var s10 = "i32.ge_u";
+      wLine(&s10[0], len(s10));
+    } else {
+      var s11 = "i32.ge_s";
+      wLine(&s11[0], len(s11));
+    }
+  } else if (opType == T_BANG_EQUAL) {
+    if (leftIsFloat) {
+      var s12 = "f32.ne";
+      wLine(&s12[0], len(s12));
+    } else {
+      var s13 = "i32.ne";
+      wLine(&s13[0], len(s13));
+    }
+  } else if (opType == T_EQUAL_EQUAL) {
+    if (leftIsFloat) {
+      var s14 = "f32.eq";
+      wLine(&s14[0], len(s14));
+    } else {
+      var s15 = "i32.eq";
+      wLine(&s15[0], len(s15));
+    }
+  } else if (opType == T_PLUS) {
+    if (leftIsFloat) {
+      var s16 = "f32.add";
+      wLine(&s16[0], len(s16));
+    } else {
+      oI32Add();
+    }
+  } else if (opType == T_MINUS) {
+    if (leftIsFloat) {
+      var s17 = "f32.sub";
+      wLine(&s17[0], len(s17));
+    } else {
+      oI32Sub();
+    }
+  } else if (opType == T_STAR) {
+    if (leftIsFloat) {
+      var s18 = "f32.mul";
+      wLine(&s18[0], len(s18));
+    } else {
+      oI32Mul();
+    }
+  } else if (opType == T_SLASH) {
+    if (leftIsFloat) {
+      var s19 = "f32.div";
+      wLine(&s19[0], len(s19));
+    } else {
+      var s20 = "i32.div_s";
+      wLine(&s20[0], len(s20));
+    }
+  } else if (opType == T_PERCENT) {
+    if (leftIsByte) {
+      var s21 = "i32.rem_u";
+      wLine(&s21[0], len(s21));
+    } else {
+      var s22 = "i32.rem_s";
+      wLine(&s22[0], len(s22));
+    }
+  } else {
+    die(100); // unhandled binary operator
+  }
+}
+
+def vCallExpr(op Node~) {
+  if (op~.a~.kind != NK_VARIABLE_EXPR) {
+    die(101); // unexpected callee
+  }
+  var symbol = op~.a~.symbol;
+  if (int(symbol) == 0) {
+    die(102); // unexpected callee
+  }
+  if (symbol~.kind == SK_FUNCTION) {
+    for (var i = 0; i < op~.list~.count; i = i + 1) {
+      visit(Node~(vecGet(op~.list, i)), EM_RVALUE);
+    }
+    var returnType = op~.resolvedType;
+    var pushReturnValToStack = !isScalar(returnType) && !(returnType~.category == TC_VOID);
+    if (pushReturnValToStack) {
+      emitAllocStackVal(returnType);
+    }
+    wInd();
+    var s0 = "call $";
+    wRaw(&s0[0], len(s0));
+    wLexeme(symbol~.node~.tokA);
+    wEnd();
+    if (pushReturnValToStack) {
+      // Call above returned address of return value.
+      // Memcpy it to the earlier reservation
+      oStackGet();
+      oI32Const(sizeOf(returnType));
+      oCallMemcpy();
+      oStackGet();
+    }
+  } else if (symbol~.kind == SK_STRUCT) {
+    // Constructors are inlined
+    emitAllocStackVal(op~.resolvedType);
+    oStackGet();
+    var structNode = op~.resolvedType~.resolvedStruct;
+    var offset = 0;
+    for (var j = 0; j < structNode~.params~.count; j = j + 1) {
+      emitDupTop(false);
+      oI32Const(offset);
+      oI32Add();
+      visit(Node~(vecGet(op~.list, j)), EM_RVALUE); // returns scalar or address of non-scalar temporary
+      var member = Param~(vecGet(structNode~.params, j));
+      if (isScalar(member~.type)) {
+        emitStoreScalar(member~.type);
+      } else {
+        emitSwapTop(false, false);
+        oI32Const(sizeOf(member~.type));
+        oCallMemcpy();
+      }
+      offset = offset + sizeOf(member~.type);
+    }
+  } else {
+    die(103); // unexpected callee
+  }
+}
+
+def vCastExpr(op Node~) {
+  visit(op~.a, EM_RVALUE);
+  var target = op~.typeA~.category;
+  var source = op~.a~.resolvedType~.category;
+  if (target == TC_BOOL) {
+    if (source == TC_BOOL || source == TC_BYTE || source == TC_INT) {
+      var s0 = "i32.eqz";
+      wLine(&s0[0], len(s0));
+      wLine(&s0[0], len(s0));
+    } else if (source == TC_FLOAT) {
+      var s1 = "f32.const 0";
+      wLine(&s1[0], len(s1));
+      var s2 = "f32.ne";
+      wLine(&s2[0], len(s2));
+    } else {
+      die(104); // unexpected type for cast source
+    }
+    return;
+  }
+  if (target == TC_BYTE) {
+    if (source == TC_BOOL || source == TC_BYTE || source == TC_INT) {
+      // no conversions needed
+    } else if (source == TC_FLOAT) {
+      // convert from f32 to signed i32 rounding towards zero (.5 will be lost)
+      // byte will interpret the 8 LSB as unsigned
+      var s3 = "i32.trunc_f32_s";
+      wLine(&s3[0], len(s3));
+    } else {
+      die(105); // unexpected type for cast source
+    }
+    return;
+  }
+  if (target == TC_INT) {
+    if (source == TC_BYTE) {
+      // mask 24 MSB
+      var s4 = "i32.const 0x000000FF";
+      wLine(&s4[0], len(s4));
+      var s5 = "i32.and";
+      wLine(&s5[0], len(s5));
+    } else if (source == TC_BOOL || source == TC_INT || source == TC_POINTER) {
+      // no conversion needed
+    } else if (source == TC_FLOAT) {
+      // convert from f32 to signed i32 rounding towards zero (.5 will be lost)
+      var s6 = "i32.trunc_f32_s";
+      wLine(&s6[0], len(s6));
+    } else {
+      die(106); // unexpected type for cast source
+    }
+    return;
+  }
+  if (target == TC_FLOAT) {
+    if (source == TC_BOOL || source == TC_BYTE || source == TC_INT) {
+      var s7 = "f32.convert_i32_s";
+      wLine(&s7[0], len(s7));
+    } else if (source == TC_FLOAT) {
+      // no conversions needed
+    } else {
+      die(107); // unexpected type for cast source
+    }
+    return;
+  }
+  if (target == TC_POINTER) {
+    if (source == TC_POINTER || source == TC_INT) {
+      // no conversions needed
+    } else {
+      die(108); // unexpected type for cast source
+    }
+    return;
+  }
+  die(109); // unexpected type for cast target
+}
+
+def vLiteralExpr(op Node~) {
+  var cat = op~.typeA~.category;
+  if (cat == TC_ARRAY) {
+    var elementType = op~.typeA~.elementType;
+    if (elementType~.category != TC_BYTE) {
+      // If we're here, we probably meant to use a LIST_EXPR
+      die(110); // literal node contains non-string array
+    }
+    oI32Const(op~.strLoc);
+    emitPushMem(op~.typeA);
+    return;
+  }
+  if (cat == TC_BOOL) {
+    if (op~.litBool) {
+      oI32Const(1);
+    } else {
+      oI32Const(0);
+    }
+    return;
+  }
+  if (cat == TC_BYTE || cat == TC_INT) {
+    if (int(op~.decStr) != 0) {
+      wInd();
+      var s0 = "i32.const ";
+      wRaw(&s0[0], len(s0));
+      wStr(op~.decStr);
+      wEnd();
+    } else {
+      oI32Const(op~.litInt);
+    }
+    return;
+  }
+  if (cat == TC_FLOAT) {
+    wInd();
+    var s1 = "f32.const ";
+    wRaw(&s1[0], len(s1));
+    if (int(op~.lexeme) != 0) {
+      wFloatLexeme(op~.lexeme);
+    } else {
+      die(111); // synthesized float literal without lexeme
+    }
+    wEnd();
+    return;
+  }
+  die(112); // unhandled literal type
+}
+
+def vLogicalExpr(op Node~) {
+  // Can use bitwise equivalents assuming operands are bools (0 or 1)
+  var label = eNextLabelID;
+  eNextLabelID = eNextLabelID + 1;
+  wInd();
+  var s0 = "(block ";
+  wRaw(&s0[0], len(s0));
+  wLabel(label);
+  var s1 = " (result i32)";
+  wRaw(&s1[0], len(s1));
+  wEnd();
+  eIndent = eIndent + 1;
+  if (op~.tokA~.type == T_AMP_AMP) {
+    visit(op~.a, EM_RVALUE);
+    emitDupTop(false);
+    var s2 = "i32.eqz";
+    wLine(&s2[0], len(s2));
+    wInd();
+    var s3 = "br_if ";
+    wRaw(&s3[0], len(s3));
+    wLabel(label);
+    wEnd();
+    visit(op~.b, EM_RVALUE);
+    var s4 = "i32.eq";
+    wLine(&s4[0], len(s4));
+  } else {
+    visit(op~.a, EM_RVALUE);
+    emitDupTop(false);
+    wInd();
+    var s5 = "br_if ";
+    wRaw(&s5[0], len(s5));
+    wLabel(label);
+    wEnd();
+    oDrop();
+    visit(op~.b, EM_RVALUE);
+  }
+  eIndent = eIndent - 1;
+  var s6 = ")";
+  wLine(&s6[0], len(s6));
+}
+
+def vUnaryExpr(op Node~) {
+  var opType = op~.tokA~.type;
+  if (opType == T_BANG) {
+    visit(op~.a, EM_RVALUE);
+    var s0 = "i32.eqz";
+    wLine(&s0[0], len(s0));
+    return;
+  }
+  if (opType == T_MINUS) {
+    var isF32 = regIsF32(op~.a~.resolvedType);
+    wInd();
+    wRegType(isF32);
+    var s1 = ".const 0";
+    wRaw(&s1[0], len(s1));
+    wEnd();
+    visit(op~.a, EM_RVALUE);
+    wInd();
+    wRegType(isF32);
+    var s2 = ".sub";
+    wRaw(&s2[0], len(s2));
+    wEnd();
+    return;
+  }
+  // '&'
+  if (op~.a~.kind == NK_VARIABLE_EXPR) {
+    var symbol = op~.a~.symbol;
+    if (int(symbol) != 0 && (symbol~.kind == SK_PARAM || symbol~.kind == SK_VARIABLE)) {
+      emitLoc(symbol);
+    } else {
+      die(113); // unhandled operand for operator '&'
+    }
+    return;
+  }
+  if (op~.a~.kind == NK_INDEX_EXPR || op~.a~.kind == NK_DOT_EXPR || op~.a~.kind == NK_DEREF_EXPR) {
+    // `&arr[i]` should return address of the ith element in `arr`.
+    // `&s.member` and `&p~` similarly return addresses of their operands.
+    visit(op~.a, EM_LVALUE);
+    return;
+  }
+  die(114); // unhandled operand for operator '&'
+}
+
+def vListExpr(op Node~) {
+  var elementType = op~.resolvedType~.elementType;
+  if (op~.listKind == LK_LIST) {
+    emitAllocStackVal(op~.resolvedType);
+    oStackGet();
+    if (isScalar(elementType)) {
+      for (var i = 0; i < op~.list~.count; i = i + 1) {
+        emitDupTop(false);
+        oI32Const(i * sizeOf(elementType));
+        oI32Add();
+        visit(Node~(vecGet(op~.list, i)), EM_RVALUE); // value to store
+        emitStoreScalar(elementType);
+      }
+    } else {
+      for (var j = 0; j < op~.list~.count; j = j + 1) {
+        emitDupTop(false);
+        oI32Const(j * sizeOf(elementType));
+        oI32Add();
+        visit(Node~(vecGet(op~.list, j)), EM_RVALUE); // address of value to store
+        emitSwapTop(false, false);
+        oI32Const(sizeOf(elementType));
+        oCallMemcpy();
+      }
+    }
+  } else {
+    if (isScalar(elementType)) {
+      visit(op~.a, EM_RVALUE); // returns value to store
+      wInd();
+      var s0 = "local.set $__tee_";
+      wRaw(&s0[0], len(s0));
+      wRegType(regIsF32(elementType));
+      var s1 = "__";
+      wRaw(&s1[0], len(s1));
+      wEnd();
+      for (var k = 0; k < op~.repeatLen; k = k + 1) {
+        emitPushScalarFromTee(elementType); // returns mutated __stack_ptr__
+        oDrop();
+      }
+    } else if (op~.repeatLen > 0) {
+      // Call repeat expression to create first array item
+      // INVARIANT: Repeat expression pushes only the evaluation result to stack
+      visit(op~.a, EM_RVALUE); // pushes to stack and returns mutated __stack_ptr__
+      for (var q = 1; q < op~.repeatLen; q = q + 1) {
+        emitPushMem(elementType); // returns mutated __stack_ptr__
+      }
+      oDrop();
+    }
+    oStackGet();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// visit: statements
+// ---------------------------------------------------------------------------
+
+// Emits the (local ...) declarations shared by all function bodies.
+def emitStandardLocals() {
+  var s0 = "(local $__base_ptr__ i32)";
+  wLine(&s0[0], len(s0));
+  var s1 = "(local $__tee_i32__ i32)";
+  wLine(&s1[0], len(s1));
+  var s2 = "(local $__tee_f32__ f32)";
+  wLine(&s2[0], len(s2));
+  var s3 = "(local $__swapa_i32__ i32)";
+  wLine(&s3[0], len(s3));
+  var s4 = "(local $__swapb_i32__ i32)";
+  wLine(&s4[0], len(s4));
+  var s5 = "(local $__swapb_f32__ f32)";
+  wLine(&s5[0], len(s5));
+  var s6 = "(local $__swapa_f32__ f32)";
+  wLine(&s6[0], len(s6));
+}
+
+def oBasePtrSave() {
+  oStackGet();
+  var s0 = "local.set $__base_ptr__";
+  wLine(&s0[0], len(s0));
+}
+
+def oBasePtrRestore() {
+  oBasePtrGet();
+  oStackSet();
+}
+
+// Allocates a WASM register or a stack location for the given local symbol.
+// Returns the new local offset.
+def allocateRegisterOrStackLoc(local Symbol~, localOffset int) int {
+  if (local~.kind == SK_FUNCTION || local~.kind == SK_STRUCT) {
+    return localOffset;
+  }
+  if (isVariableInRegister(local) && local~.kind == SK_VARIABLE) {
+    wInd();
+    var s0 = "(local $";
+    wRaw(&s0[0], len(s0));
+    wLexeme(local~.node~.tokA);
+    bufPushChar(gOut, 95); // '_'
+    wInt(local~.id);
+    bufPushChar(gOut, 32);
+    wRegType(regIsF32(local~.node~.typeA));
+    bufPushChar(gOut, 41); // ')'
+    wEnd();
+    return localOffset;
+  }
+  var type = symbolValueType(local);
+  var newOffset = localOffset + sizeOf(type);
+  local~.localLoc = newOffset;
+  local~.hasLocalLoc = true;
+  return newOffset;
+}
+
+def vFunctionStmt(op Node~) {
+  if (!op~.hasBody) {
+    // Imported/built-in functions generate code separately
+    return;
+  }
+  var sMain = "main";
+  var isMain = strEqRaw(tokenLexemeStr(op~.tokA), &sMain[0], len(sMain));
+  wInd();
+  var s0 = "(func $";
+  wRaw(&s0[0], len(s0));
+  wLexeme(op~.tokA);
+  if (isMain || op~.isExported) {
+    // NOTE: puff string literals cannot contain double quotes; build manually.
+    var s1 = " (export ";
+    wRaw(&s1[0], len(s1));
+    bufPushChar(gOut, 34);
+    wLexeme(op~.tokA);
+    bufPushChar(gOut, 34);
+    bufPushChar(gOut, 41); // ')'
+  }
+  wEnd();
+  eIndent = eIndent + 1;
+  // params
+  for (var i = 0; i < op~.scope~.syms~.count; i = i + 1) {
+    var sym = Symbol~(vecGet(op~.scope~.syms, i));
+    if (sym~.kind == SK_PARAM) {
+      wInd();
+      var s2 = "(param $";
+      wRaw(&s2[0], len(s2));
+      wLexeme(sym~.param~.name);
+      bufPushChar(gOut, 95); // '_'
+      wInt(sym~.id);
+      bufPushChar(gOut, 32);
+      wRegType(regIsF32(sym~.param~.type));
+      bufPushChar(gOut, 41); // ')'
+      wEnd();
+    }
+  }
+  if (!(op~.typeA~.category == TC_VOID)) {
+    wInd();
+    var s3 = "(result ";
+    wRaw(&s3[0], len(s3));
+    wRegType(regIsF32(op~.typeA));
+    bufPushChar(gOut, 41); // ')'
+    wEnd();
+  }
+  // WASM doesn't have block scope, and `func` definitions require all local
+  // registers to be declared ahead-of-time, so we hoist all locals in
+  // descendant scopes to the top.
+  emitStandardLocals();
+  var localOffset = 0;
+  for (var j = 0; j < op~.scope~.syms~.count; j = j + 1) {
+    localOffset = allocateRegisterOrStackLoc(Symbol~(vecGet(op~.scope~.syms, j)), localOffset);
+  }
+  if (int(op~.hoisted) != 0) {
+    for (var k = 0; k < op~.hoisted~.count; k = k + 1) {
+      localOffset = allocateRegisterOrStackLoc(Symbol~(vecGet(op~.hoisted, k)), localOffset);
+    }
+  }
+  oBasePtrSave();
+  oStackGet();
+  oI32Const(localOffset);
+  oI32Sub();
+  oStackSet();
+
+  // Copy + push nonregister args to stack
+  for (var m = 0; m < op~.params~.count; m = m + 1) {
+    var param = Param~(vecGet(op~.params, m));
+    var symbol = scopeLookup(op~.scope, tokenLexemeStr(param~.name), LOOKUP_ANY);
+    if (int(symbol) != 0 && !isVariableInRegister(symbol)) {
+      oLocalOp(false, param~.name, symbol~.id);
+      emitSetSymbol(symbol);
+      // After this, we should only ever be using `emitGetSymbol` to access
+      // the symbol. The local is meaningless.
+    }
+  }
+
+  for (var n = 0; n < op~.list~.count; n = n + 1) {
+    visit(Node~(vecGet(op~.list, n)), EM_RVALUE);
+  }
+
+  oBasePtrRestore();
+  eIndent = eIndent - 1;
+  var s4 = ")";
+  wLine(&s4[0], len(s4));
+}
+
+def vIfStmt(op Node~) {
+  visit(op~.a, EM_RVALUE);
+  var s0 = "(if";
+  wLine(&s0[0], len(s0));
+  eIndent = eIndent + 1;
+  var s1 = "(then";
+  wLine(&s1[0], len(s1));
+  eIndent = eIndent + 1;
+  visit(op~.b, EM_RVALUE);
+  eIndent = eIndent - 1;
+  var s2 = ")";
+  wLine(&s2[0], len(s2));
+  if (int(op~.c) != 0) {
+    var s3 = "(else";
+    wLine(&s3[0], len(s3));
+    eIndent = eIndent + 1;
+    visit(op~.c, EM_RVALUE);
+    eIndent = eIndent - 1;
+    var s4 = ")";
+    wLine(&s4[0], len(s4));
+  }
+  eIndent = eIndent - 1;
+  var s5 = ")";
+  wLine(&s5[0], len(s5));
+}
+
+def vWhileStmt(op Node~) {
+  var outerLabel = eNextLabelID;
+  eNextLabelID = eNextLabelID + 1;
+  var innerLabel = eNextLabelID;
+  eNextLabelID = eNextLabelID + 1;
+  var incrementLabel = -1;
+  if (int(op~.c) != 0) {
+    incrementLabel = eNextLabelID;
+    eNextLabelID = eNextLabelID + 1;
+  }
+  wInd();
+  var s0 = "(block ";
+  wRaw(&s0[0], len(s0));
+  wLabel(outerLabel);
+  wEnd();
+  eIndent = eIndent + 1;
+  wInd();
+  var s1 = "(loop ";
+  wRaw(&s1[0], len(s1));
+  wLabel(innerLabel);
+  wEnd();
+  eIndent = eIndent + 1;
+  visit(op~.a, EM_RVALUE);
+  var s2 = "i32.eqz";
+  wLine(&s2[0], len(s2));
+  wInd();
+  var s3 = "br_if ";
+  wRaw(&s3[0], len(s3));
+  wLabel(outerLabel);
+  wEnd();
+  if (int(op~.c) != 0) {
+    wInd();
+    var s4 = "(block ";
+    wRaw(&s4[0], len(s4));
+    wLabel(incrementLabel);
+    wEnd();
+    eIndent = eIndent + 1;
+  }
+
+  vecPush(eLoopStack, outerLabel);
+  vecPush(eLoopStack, innerLabel);
+  vecPush(eLoopStack, incrementLabel);
+  visit(op~.b, EM_RVALUE);
+  vecPop(eLoopStack);
+  vecPop(eLoopStack);
+  vecPop(eLoopStack);
+
+  if (int(op~.c) != 0) {
+    eIndent = eIndent - 1;
+    var s5 = ")";
+    wLine(&s5[0], len(s5));
+    visit(op~.c, EM_RVALUE);
+  }
+
+  wInd();
+  var s6 = "br ";
+  wRaw(&s6[0], len(s6));
+  wLabel(innerLabel);
+  wEnd();
+  eIndent = eIndent - 1;
+  var s7 = ")";
+  wLine(&s7[0], len(s7));
+  eIndent = eIndent - 1;
+  wLine(&s7[0], len(s7));
+}
+
+def vLoopControlStmt(op Node~) {
+  if (eLoopStack~.count == 0) {
+    die(115); // unexpected loop control statement outside of loop
+  }
+  var outerLabel = vecGet(eLoopStack, eLoopStack~.count - 3);
+  var innerLabel = vecGet(eLoopStack, eLoopStack~.count - 2);
+  var incrementLabel = vecGet(eLoopStack, eLoopStack~.count - 1);
+  wInd();
+  var s0 = "br ";
+  wRaw(&s0[0], len(s0));
+  if (op~.tokA~.type == T_BREAK) {
+    wLabel(outerLabel);
+  } else {
+    if (incrementLabel >= 0) {
+      wLabel(incrementLabel);
+    } else {
+      wLabel(innerLabel);
+    }
+  }
+  wEnd();
+}
+
+// ---------------------------------------------------------------------------
+// visit dispatcher
+// ---------------------------------------------------------------------------
+
+def visit(node Node~, exprMode int) {
+  if (node~.skipEmit) {
+    return;
+  }
+  var kind = node~.kind;
+  if (kind == NK_ASSIGN_EXPR) {
+    vAssignExpr(node);
+  } else if (kind == NK_BINARY_EXPR) {
+    vBinaryExpr(node);
+  } else if (kind == NK_CALL_EXPR) {
+    vCallExpr(node);
+  } else if (kind == NK_CAST_EXPR) {
+    vCastExpr(node);
+  } else if (kind == NK_DEREF_EXPR) {
+    var elementType = node~.resolvedType;
+    visit(node~.a, EM_RVALUE); // returns an address pointing to value of type `elementType`
+    if (exprMode == EM_LVALUE) {
+      // Done; return address of value
+    } else {
+      if (isScalar(elementType)) {
+        emitLoadScalar(elementType);
+      } else {
+        emitPushMem(elementType);
+      }
+    }
+  } else if (kind == NK_DOT_EXPR) {
+    var memberType = node~.resolvedType;
+    var structType = node~.a~.resolvedType;
+    if (structType~.category != TC_STRUCT) {
+      die(116); // unexpected callee type for dot expr
+    }
+    visit(node~.a, EM_LVALUE); // get address of struct start
+    var offset = 0;
+    var structNode = structType~.resolvedStruct;
+    for (var i = 0; i < structNode~.params~.count; i = i + 1) {
+      var member = Param~(vecGet(structNode~.params, i));
+      if (strEq(tokenLexemeStr(member~.name), tokenLexemeStr(node~.tokB))) {
+        break;
+      }
+      offset = offset + sizeOf(member~.type);
+    }
+    oI32Const(offset);
+    oI32Add();
+    if (exprMode == EM_LVALUE) {
+      // done; address of member returned
+    } else {
+      // get value of member
+      if (isScalar(memberType)) {
+        emitLoadScalar(memberType);
+      } else {
+        emitPushMem(memberType);
+      }
+    }
+  } else if (kind == NK_GROUP_EXPR) {
+    visit(node~.a, EM_RVALUE);
+  } else if (kind == NK_INDEX_EXPR) {
+    // TODO: trap on out-of-bounds access
+    var idxElementType = node~.resolvedType;
+    visit(node~.a, EM_LVALUE); // get address of array start
+    visit(node~.b, EM_RVALUE); // get index
+    // eat 2, get address of indexed element
+    oI32Const(sizeOf(idxElementType));
+    oI32Mul();
+    oI32Add();
+    if (exprMode == EM_LVALUE) {
+      // done; address of indexed element returned
+    } else {
+      // get value of indexed element
+      if (isScalar(idxElementType)) {
+        emitLoadScalar(idxElementType);
+      } else {
+        emitPushMem(idxElementType);
+      }
+    }
+  } else if (kind == NK_LEN_EXPR) {
+    oI32Const(node~.resolvedLength);
+  } else if (kind == NK_LIST_EXPR) {
+    vListExpr(node);
+  } else if (kind == NK_LITERAL_EXPR) {
+    vLiteralExpr(node);
+  } else if (kind == NK_LOGICAL_EXPR) {
+    vLogicalExpr(node);
+  } else if (kind == NK_UNARY_EXPR) {
+    vUnaryExpr(node);
+  } else if (kind == NK_VARIABLE_EXPR) {
+    var symbol = node~.symbol;
+    if (int(symbol) == 0) {
+      die(117); // unresolved symbol in variable expression
+    }
+    if (symbol~.kind == SK_VARIABLE || symbol~.kind == SK_PARAM) {
+      emitGetSymbol(symbol);
+      if (!isScalar(node~.resolvedType) && exprMode == EM_RVALUE) {
+        // When evaluating non-scalar variables as rvals, copy the value
+        // as a temporary to the stack
+        emitPushMem(node~.resolvedType);
+      }
+    } else {
+      // We shouldn't be visiting variable expressions of function type.
+      die(118);
+    }
+  } else if (kind == NK_BLOCK_STMT) {
+    for (var i = 0; i < node~.list~.count; i = i + 1) {
+      visit(Node~(vecGet(node~.list, i)), EM_RVALUE);
+    }
+  } else if (kind == NK_EXPRESSION_STMT) {
+    visit(node~.a, EM_RVALUE);
+    if (!(node~.a~.resolvedType~.category == TC_VOID)) {
+      // discard result
+      oDrop();
+    }
+  } else if (kind == NK_FUNCTION_STMT) {
+    vFunctionStmt(node);
+  } else if (kind == NK_IF_STMT) {
+    vIfStmt(node);
+  } else if (kind == NK_LOOP_CONTROL_STMT) {
+    vLoopControlStmt(node);
+  } else if (kind == NK_PRINT_STMT) {
+    visit(node~.a, EM_RVALUE);
+    emitPrintVal(node~.a~.resolvedType);
+    var s0 = "call $__flush__";
+    wLine(&s0[0], len(s0));
+  } else if (kind == NK_RETURN_STMT) {
+    if (int(node~.a) != 0) {
+      visit(node~.a, EM_RVALUE);
+    }
+    oBasePtrRestore();
+    var s1 = "return";
+    wLine(&s1[0], len(s1));
+  } else if (kind == NK_STRUCT_STMT) {
+    // These don't generate any code. Constructors, assignment, comparisons,
+    // and member accesses are all inlined.
+  } else if (kind == NK_VAR_STMT) {
+    visit(node~.a, EM_RVALUE);
+    emitSetSymbol(node~.symbol); // returns address/value that was set
+    oDrop();
+  } else if (kind == NK_WHILE_STMT) {
+    vWhileStmt(node);
+  } else {
+    die(119); // unhandled node kind in visit
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Module emission
+// ---------------------------------------------------------------------------
+
+def emitBuiltins() {
+  // __memcpy__
+  var s0 = "(func $__memcpy__ (param $src i32) (param $dst i32) (param $numBytes i32)";
+  wLine(&s0[0], len(s0));
+  eIndent = eIndent + 1;
+  var outerLabel = eNextLabelID;
+  eNextLabelID = eNextLabelID + 1;
+  var innerLabel = eNextLabelID;
+  eNextLabelID = eNextLabelID + 1;
+  wInd();
+  var s1 = "(block ";
+  wRaw(&s1[0], len(s1));
+  wLabel(outerLabel);
+  wEnd();
+  eIndent = eIndent + 1;
+  wInd();
+  var s2 = "(loop ";
+  wRaw(&s2[0], len(s2));
+  wLabel(innerLabel);
+  wEnd();
+  eIndent = eIndent + 1;
+  var s3 = "local.get $numBytes";
+  wLine(&s3[0], len(s3));
+  oI32Const(0);
+  var s4 = "i32.gt_s";
+  wLine(&s4[0], len(s4));
+  var s5 = "i32.eqz";
+  wLine(&s5[0], len(s5));
+  wInd();
+  var s6 = "br_if ";
+  wRaw(&s6[0], len(s6));
+  wLabel(outerLabel);
+  wEnd();
+  // *dst = *src;
+  var s7 = "local.get $dst";
+  wLine(&s7[0], len(s7));
+  var s8 = "local.get $src";
+  wLine(&s8[0], len(s8));
+  var s9 = "i32.load8_u";
+  wLine(&s9[0], len(s9));
+  var s10 = "i32.store8";
+  wLine(&s10[0], len(s10));
+  // src++, dst++;
+  wLine(&s8[0], len(s8));
+  oI32Const(1);
+  oI32Add();
+  var s11 = "local.set $src";
+  wLine(&s11[0], len(s11));
+  wLine(&s7[0], len(s7));
+  oI32Const(1);
+  oI32Add();
+  var s12 = "local.set $dst";
+  wLine(&s12[0], len(s12));
+  // numBytes--;
+  wLine(&s3[0], len(s3));
+  oI32Const(1);
+  oI32Sub();
+  var s13 = "local.set $numBytes";
+  wLine(&s13[0], len(s13));
+  wInd();
+  wEnd();
+  wInd();
+  var s14 = "br ";
+  wRaw(&s14[0], len(s14));
+  wLabel(innerLabel);
+  wEnd();
+  eIndent = eIndent - 1;
+  var s15 = ")";
+  wLine(&s15[0], len(s15));
+  eIndent = eIndent - 1;
+  wLine(&s15[0], len(s15));
+  eIndent = eIndent - 1;
+  wLine(&s15[0], len(s15));
+
+  // __sqrt__ (note: body is emitted at the same indent level as the `(func`,
+  // mirroring the reference backend)
+  var s16 = "(func $__sqrt__ (param $x f32) (result f32)";
+  wLine(&s16[0], len(s16));
+  var s17 = "local.get $x";
+  wLine(&s17[0], len(s17));
+  var s18 = "f32.sqrt";
+  wLine(&s18[0], len(s18));
+  wLine(&s15[0], len(s15));
+
+  // __heap_end__
+  var s19 = "(func $__heap_end__ (result i32)";
+  wLine(&s19[0], len(s19));
+  var s20 = "memory.size";
+  wLine(&s20[0], len(s20));
+  oI32Const(65536);
+  oI32Mul();
+  wLine(&s15[0], len(s15));
+
+  // __grow_heap__
+  var s21 = "(func $__grow_heap__ (param $numPages i32) (result i32)";
+  wLine(&s21[0], len(s21));
+  var s22 = "local.get $numPages";
+  wLine(&s22[0], len(s22));
+  var s23 = "memory.grow";
+  wLine(&s23[0], len(s23));
+  wLine(&s15[0], len(s15));
+}
+
+// Emits WAT code for the resolved program into gOut.
+// Mirrors `emit` in src/backend.ts.
+def emitProgram() {
+  var s0 = "(module";
+  wLine(&s0[0], len(s0));
+  eIndent = eIndent + 1;
+
+  emitIoImport(0);
+  emitIoImport(1);
+  emitIoImport(2);
+  emitIoImport(3);
+  emitIoImport(4);
+  emitIoImport(5);
+
+  // Imports must precede all non-import definitions in the module.
+  for (var i = 0; i < gTopLevel~.count; i = i + 1) {
+    var stmt = Node~(vecGet(gTopLevel, i));
+    if (stmt~.kind == NK_FUNCTION_STMT && int(stmt~.hostModule) != 0) {
+      emitEnvImport(stmt);
+    }
+  }
+
+  wInd();
+  var s2 = "(memory $memory ";
+  wRaw(&s2[0], len(s2));
+  wInt(INITIAL_PAGES);
+  bufPushChar(gOut, 41);
+  wEnd();
+
+  wInd();
+  var s3 = "(global $__stack_ptr__ (mut i32) i32.const ";
+  wRaw(&s3[0], len(s3));
+  wInt(STACK_TOP_BYTE_OFFSET);
+  bufPushChar(gOut, 41);
+  wEnd();
+
+  var globalByteOffset = DATA_TOP_BYTE_OFFSET;
+  for (var j = 0; j < gStrLitNodes~.count; j = j + 1) {
+    var litNode = Node~(vecGet(gStrLitNodes, j));
+    globalByteOffset = globalByteOffset - sizeOf(litNode~.typeA);
+    litNode~.strLoc = globalByteOffset;
+    wInd();
+    var s4 = "(data (i32.const ";
+    wRaw(&s4[0], len(s4));
+    wInt(globalByteOffset);
+    var s5 = ") ";
+    wRaw(&s5[0], len(s5));
+    bufPushChar(gOut, 34); // '"'
+    // WAT strings cannot contain backslashes, ASCII control sequences,
+    // or quotes; escape backslashes (quotes cannot appear in literals).
+    var lit = litNode~.litStr;
+    for (var k = 0; k < lit~.count; k = k + 1) {
+      var c = int(strGet(lit, k));
+      if (c == 92) {
+        bufPushChar(gOut, 92);
+        bufPushChar(gOut, 92);
+      } else {
+        bufPushChar(gOut, c);
+      }
+    }
+    bufPushChar(gOut, 34); // '"'
+    bufPushChar(gOut, 41); // ')'
+    wEnd();
+  }
+
+  for (var m = 0; m < gGlobalInitOrder~.count; m = m + 1) {
+    var varDecl = Node~(vecGet(gGlobalInitOrder, m));
+    if (int(varDecl~.symbol) != 0 && int(varDecl~.typeA) != 0) {
+      if (isVariableInRegister(varDecl~.symbol)) {
+        wInd();
+        var s6 = "(global $";
+        wRaw(&s6[0], len(s6));
+        wLexeme(varDecl~.tokA);
+        var s7 = " (mut ";
+        wRaw(&s7[0], len(s7));
+        var isF32 = regIsF32(varDecl~.typeA);
+        wRegType(isF32);
+        var s8 = ") ";
+        wRaw(&s8[0], len(s8));
+        wRegType(isF32);
+        var s9 = ".const 0)";
+        wRaw(&s9[0], len(s9));
+        wEnd();
+      } else {
+        globalByteOffset = globalByteOffset - sizeOf(varDecl~.typeA);
+        varDecl~.symbol~.globalLoc = globalByteOffset;
+        varDecl~.symbol~.hasGlobalLoc = true;
+      }
+    }
+  }
+
+  emitInitGlobalsHeader();
+  eIndent = eIndent + 1;
+  emitStandardLocals();
+  oBasePtrSave();
+  for (var n = 0; n < gGlobalInitOrder~.count; n = n + 1) {
+    var varDecl2 = Node~(vecGet(gGlobalInitOrder, n));
+    if (int(varDecl2~.typeA) != 0) {
+      visit(varDecl2, EM_RVALUE);
+      varDecl2~.skipEmit = true;
+    }
+  }
+  oBasePtrRestore();
+  eIndent = eIndent - 1;
+  var s11 = ")";
+  wLine(&s11[0], len(s11));
+
+  emitBuiltins();
+
+  for (var q = 0; q < gTopLevel~.count; q = q + 1) {
+    visit(Node~(vecGet(gTopLevel, q)), EM_RVALUE);
+  }
+
+  eIndent = eIndent - 1;
+  wLine(&s11[0], len(s11));
+}
+
+// Emits `(func (export "__init_globals__")` -- built with explicit quote
+// chars since puff string literals cannot contain double quotes.
+def emitInitGlobalsHeader() {
+  wInd();
+  var s0 = "(func (export ";
+  wRaw(&s0[0], len(s0));
+  bufPushChar(gOut, 34);
+  var s1 = "__init_globals__";
+  wRaw(&s1[0], len(s1));
+  bufPushChar(gOut, 34);
+  bufPushChar(gOut, 41);
+  wEnd();
+}
+
+// Emits one of the six fixed io imports; `which` selects the import.
+def emitIoImport(which int) {
+  wInd();
+  var s0 = "(import ";
+  wRaw(&s0[0], len(s0));
+  bufPushChar(gOut, 34);
+  var s1 = "io";
+  wRaw(&s1[0], len(s1));
+  bufPushChar(gOut, 34);
+  bufPushChar(gOut, 32);
+  bufPushChar(gOut, 34);
+  if (which == 0 || which == 1) {
+    var s2 = "log";
+    wRaw(&s2[0], len(s2));
+  } else if (which == 2) {
+    var s3 = "putchar";
+    wRaw(&s3[0], len(s3));
+  } else if (which == 3) {
+    var s4 = "putf";
+    wRaw(&s4[0], len(s4));
+  } else if (which == 4) {
+    var s5 = "puti";
+    wRaw(&s5[0], len(s5));
+  } else {
+    var s6 = "flush";
+    wRaw(&s6[0], len(s6));
+  }
+  bufPushChar(gOut, 34);
+  var s7 = " (func $";
+  wRaw(&s7[0], len(s7));
+  if (which == 0) {
+    var s8 = "__log_i32__ (param i32)";
+    wRaw(&s8[0], len(s8));
+  } else if (which == 1) {
+    var s9 = "__log_f32__ (param f32)";
+    wRaw(&s9[0], len(s9));
+  } else if (which == 2) {
+    var s10 = "__putc__ (param i32)";
+    wRaw(&s10[0], len(s10));
+  } else if (which == 3) {
+    var s11 = "__putf__ (param f32)";
+    wRaw(&s11[0], len(s11));
+  } else if (which == 4) {
+    var s12 = "__puti__ (param i32)";
+    wRaw(&s12[0], len(s12));
+  } else {
+    var s13 = "__flush__";
+    wRaw(&s13[0], len(s13));
+  }
+  var s14 = "))";
+  wRaw(&s14[0], len(s14));
+  wEnd();
+}
+
+// Emits `(import "env" "<name>" (func $<name> (param i32)... (result i32)))`.
+def emitEnvImport(fn Node~) {
+  wInd();
+  var s0 = "(import ";
+  wRaw(&s0[0], len(s0));
+  bufPushChar(gOut, 34);
+  wStr(fn~.hostModule);
+  bufPushChar(gOut, 34);
+  bufPushChar(gOut, 32);
+  bufPushChar(gOut, 34);
+  wLexeme(fn~.tokA);
+  bufPushChar(gOut, 34);
+  var s1 = " (func $";
+  wRaw(&s1[0], len(s1));
+  wLexeme(fn~.tokA);
+  for (var i = 0; i < fn~.params~.count; i = i + 1) {
+    var param = Param~(vecGet(fn~.params, i));
+    var s2 = " (param ";
+    wRaw(&s2[0], len(s2));
+    wRegType(regIsF32(param~.type));
+    bufPushChar(gOut, 41);
+  }
+  if (!(fn~.typeA~.category == TC_VOID)) {
+    var s3 = " (result ";
+    wRaw(&s3[0], len(s3));
+    wRegType(regIsF32(fn~.typeA));
+    bufPushChar(gOut, 41);
+  }
+  var s4 = "))";
+  wRaw(&s4[0], len(s4));
+  wEnd();
+}

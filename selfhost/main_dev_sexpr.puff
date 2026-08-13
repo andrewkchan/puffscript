@@ -1,0 +1,33 @@
+// Development driver: dumps the parsed AST as s-expressions in the same
+// format as `tools/dump.ts --sexpr` for differential testing.
+
+var gOut Buf~ = bufNewWithCap(65536);
+
+def main() {
+  gSource = readAllInput();
+  initContext();
+  scanTokens();
+  if (numErrors() == 0) {
+    parseProgram();
+    if (numErrors() == 0) {
+      bufPushChar(gOut, 40);
+      for (var i = 0; i < gTopLevel~.count; i = i + 1) {
+        if (i > 0) {
+          bufPushChar(gOut, 32);
+        }
+        astToSExpr(gOut, Node~(vecGet(gTopLevel, i)));
+      }
+      bufPushChar(gOut, 41);
+      bufPushChar(gOut, 10);
+    }
+  }
+  writeBufTo(gOut, false);
+  for (var i = 0; i < gErrors~.count; i = i + 1) {
+    writeStrTo(Str~(vecGet(gErrors, i)), true);
+    puterr(10);
+  }
+  if (numErrors() > 0) {
+    exit(1);
+  }
+  exit(0);
+}

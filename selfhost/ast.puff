@@ -1,0 +1,645 @@
+// ast.puff
+// AST node/type/symbol/scope definitions, ported from src/nodes.ts.
+// Nodes are represented as one "fat" struct with a kind tag; field usage
+// per kind is documented below.
+
+// NodeKind constants (must mirror the NodeKind enum in src/nodes.ts).
+var NK_ASSIGN_EXPR = 0;
+var NK_BINARY_EXPR = 1;
+var NK_CALL_EXPR = 2;
+var NK_CAST_EXPR = 3;
+var NK_DEREF_EXPR = 4;
+var NK_DOT_EXPR = 5;
+var NK_GROUP_EXPR = 6;
+var NK_INDEX_EXPR = 7;
+var NK_LEN_EXPR = 8;
+var NK_LIST_EXPR = 9;
+var NK_LITERAL_EXPR = 10;
+var NK_LOGICAL_EXPR = 11;
+var NK_UNARY_EXPR = 12;
+var NK_VARIABLE_EXPR = 13;
+var NK_BLOCK_STMT = 14;
+var NK_EXPRESSION_STMT = 15;
+var NK_FUNCTION_STMT = 16;
+var NK_IF_STMT = 17;
+var NK_LOOP_CONTROL_STMT = 18;
+var NK_PRINT_STMT = 19;
+var NK_RETURN_STMT = 20;
+var NK_STRUCT_STMT = 21;
+var NK_VAR_STMT = 22;
+var NK_WHILE_STMT = 23;
+
+// TypeCategory constants (must mirror TypeCategory in src/nodes.ts).
+var TC_ARRAY = 0;
+var TC_BOOL = 1;
+var TC_BYTE = 2;
+var TC_ERROR = 3;
+var TC_FLOAT = 4;
+var TC_INT = 5;
+var TC_POINTER = 6;
+var TC_STRUCT = 7;
+var TC_VOID = 8;
+
+// SymbolKind constants (must mirror SymbolKind in src/nodes.ts).
+var SK_VARIABLE = 0;
+var SK_FUNCTION = 1;
+var SK_PARAM = 2;
+var SK_STRUCT = 3;
+
+// ListKind constants.
+var LK_LIST = 0;
+var LK_REPEAT = 1;
+
+var INT_MIN = -2147483647;
+var INT_MAX = 2147483647;
+var BYTE_MIN = 0;
+var BYTE_MAX = 255;
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+struct Type {
+  category int,
+  elementType Type~, // for ARRAY and POINTER
+  length int,        // for ARRAY
+  name Token~,       // for STRUCT
+  resolvedStruct Node~ // for STRUCT; the StructStmt node, filled by resolver
+}
+
+def newType(category int) Type~ {
+  var t = Type~(alloc(20));
+  t~.category = category;
+  t~.elementType = Type~(0);
+  t~.name = Token~(0);
+  t~.resolvedStruct = Node~(0);
+  return t;
+}
+
+// Type singletons, mirroring IntType/FloatType/etc in src/nodes.ts.
+var gTypeError Type~ = newType(TC_ERROR);
+var gTypeVoid Type~ = newType(TC_VOID);
+var gTypeInt Type~ = newType(TC_INT);
+var gTypeFloat Type~ = newType(TC_FLOAT);
+var gTypeByte Type~ = newType(TC_BYTE);
+var gTypeBool Type~ = newType(TC_BOOL);
+
+def arrayType(elementType Type~, length int) Type~ {
+  var t = newType(TC_ARRAY);
+  t~.elementType = elementType;
+  t~.length = length;
+  return t;
+}
+
+def ptrType(elementType Type~) Type~ {
+  var t = newType(TC_POINTER);
+  t~.elementType = elementType;
+  return t;
+}
+
+def unresolvedStructType(name Token~) Type~ {
+  var t = newType(TC_STRUCT);
+  t~.name = name;
+  return t;
+}
+
+def resolvedStructType(structNode Node~) Type~ {
+  var t = newType(TC_STRUCT);
+  t~.name = structNode~.tokA;
+  t~.resolvedStruct = structNode;
+  return t;
+}
+
+def typeIsEqual(a Type~, b Type~) bool {
+  if (a~.category == TC_ARRAY && b~.category == TC_ARRAY) {
+    return typeIsEqual(a~.elementType, b~.elementType) && a~.length == b~.length;
+  }
+  if (a~.category == TC_STRUCT && b~.category == TC_STRUCT) {
+    if (int(a~.resolvedStruct) == 0 || int(b~.resolvedStruct) == 0) {
+      die(80); // comparing unresolved struct types
+    }
+    return int(a~.resolvedStruct) == int(b~.resolvedStruct);
+  }
+  if (a~.category == TC_POINTER && b~.category == TC_POINTER) {
+    return typeIsEqual(a~.elementType, b~.elementType);
+  }
+  return a~.category == b~.category;
+}
+
+def isValidElementType(t Type~) bool {
+  if (t~.category == TC_ERROR) {
+    return true;
+  }
+  return !(t~.category == TC_VOID);
+}
+
+def sizeOf(t Type~) int {
+  if (t~.category == TC_ARRAY) {
+    return sizeOf(t~.elementType) * t~.length;
+  }
+  if (t~.category == TC_STRUCT) {
+    if (int(t~.resolvedStruct) == 0) {
+      die(81); // sizeof unresolved struct type
+    }
+    var size = 0;
+    var members = t~.resolvedStruct~.params;
+    for (var i = 0; i < members~.count; i = i + 1) {
+      var member = Param~(vecGet(members, i));
+      size = size + sizeOf(member~.type);
+    }
+    return size;
+  }
+  if (t~.category == TC_POINTER || t~.category == TC_INT || t~.category == TC_FLOAT) {
+    return 4;
+  }
+  if (t~.category == TC_BYTE || t~.category == TC_BOOL) {
+    return 1;
+  }
+  if (t~.category == TC_VOID) {
+    return 0;
+  }
+  die(82); // sizeof error type
+  return 0;
+}
+
+def isScalar(t Type~) bool {
+  var c = t~.category;
+  return c == TC_BOOL || c == TC_BYTE || c == TC_FLOAT || c == TC_INT || c == TC_POINTER;
+}
+
+def isNumeric(t Type~) bool {
+  var c = t~.category;
+  return c == TC_INT || c == TC_FLOAT || c == TC_BYTE;
+}
+
+def canCast(from Type~, to Type~) bool {
+  if (from~.category == TC_ERROR || to~.category == TC_ERROR) {
+    // We already threw an error somewhere.
+    // Pretend we can cast the result so we don't cascade errors.
+    return true;
+  }
+  if ((isNumeric(from) || from~.category == TC_BOOL) && (isNumeric(to) || to~.category == TC_BOOL)) {
+    // Numerics and bools can always be casted to and from each other.
+    return true;
+  }
+  if (from~.category == TC_POINTER && to~.category == TC_POINTER) {
+    // Pointers are a type escape hatch and can always be casted to/from each other.
+    return true;
+  }
+  if (from~.category == TC_INT && to~.category == TC_POINTER) {
+    return true;
+  }
+  if (from~.category == TC_POINTER && to~.category == TC_INT) {
+    return true;
+  }
+  return typeIsEqual(from, to);
+}
+
+def canCoerce(from Type~, to Type~) bool {
+  if (from~.category == TC_ERROR || to~.category == TC_ERROR) {
+    return true;
+  }
+  if (typeIsEqual(from, to)) {
+    return true;
+  }
+  var fc = from~.category;
+  var tc = to~.category;
+  if (fc == TC_ARRAY || fc == TC_VOID || fc == TC_POINTER || fc == TC_STRUCT) {
+    return false;
+  }
+  if (tc == TC_ARRAY || tc == TC_VOID || tc == TC_POINTER || tc == TC_STRUCT) {
+    return false;
+  }
+  if (fc == TC_INT) {
+    return tc == TC_INT || tc == TC_FLOAT || tc == TC_BOOL;
+  }
+  if (fc == TC_FLOAT) {
+    return tc == TC_FLOAT;
+  }
+  if (fc == TC_BYTE) {
+    return tc == TC_INT || tc == TC_FLOAT || tc == TC_BYTE;
+  }
+  if (fc == TC_BOOL) {
+    return tc == TC_BOOL;
+  }
+  return false;
+}
+
+// Checks whether a literal node's numeric value can be coerced to the target
+// type. Mirrors canCoerceNumberLiteral in src/nodes.ts; takes the literal
+// node so it can handle both int-flavored and float-flavored values.
+def canCoerceNumberLiteralNode(node Node~, to Type~) bool {
+  if (!isNumeric(to)) {
+    return false;
+  }
+  var isFloatLit = node~.typeA~.category == TC_FLOAT;
+  if (to~.category == TC_FLOAT) {
+    return true;
+  }
+  // Target is byte or int: value must be an integer in range.
+  if (isFloatLit) {
+    var v = node~.litFloat;
+    // Out-of-range values cannot be represented (guard i32.trunc traps;
+    // 2147483520 is the largest f32 below 2^31).
+    if (!(v >= -2147483520.0 && v <= 2147483520.0)) {
+      return false;
+    }
+    var iv = int(v);
+    if (float(iv) != v) {
+      return false; // not an integer
+    }
+    if (to~.category == TC_BYTE) {
+      return iv >= BYTE_MIN && iv <= BYTE_MAX;
+    }
+    return iv >= INT_MIN && iv <= INT_MAX;
+  }
+  var value = node~.litInt;
+  if (to~.category == TC_BYTE) {
+    return value >= BYTE_MIN && value <= BYTE_MAX;
+  }
+  return value >= INT_MIN && value <= INT_MAX;
+}
+
+def isNumberLiteral(node Node~) bool {
+  if (node~.kind != NK_LITERAL_EXPR) {
+    return false;
+  }
+  return isNumeric(node~.typeA);
+}
+
+// Get lowest common numeric type to which we can coerce both `a` and `b`.
+// If one of the args is not a numeric, returns null.
+def getLowestCommonNumeric(a Type~, b Type~) Type~ {
+  if (!isNumeric(a) || !isNumeric(b)) {
+    return Type~(0);
+  }
+  if (typeIsEqual(a, b)) {
+    return a;
+  }
+  if (canCoerce(a, gTypeByte) && canCoerce(b, gTypeByte)) {
+    return gTypeByte;
+  }
+  if (canCoerce(a, gTypeInt) && canCoerce(b, gTypeInt)) {
+    return gTypeInt;
+  }
+  if (canCoerce(a, gTypeFloat) && canCoerce(b, gTypeFloat)) {
+    return gTypeFloat;
+  }
+  return Type~(0);
+}
+
+// Appends the human-readable type name to `out`.
+// Mirrors typeToString in src/nodes.ts.
+def typeToString(out Buf~, t Type~) {
+  if (t~.category == TC_ARRAY) {
+    bufPushChar(out, 91); // '['
+    typeToString(out, t~.elementType);
+    bufPushChar(out, 59); // ';'
+    bufPushChar(out, 32);
+    bufPushInt(out, t~.length);
+    bufPushChar(out, 93); // ']'
+    return;
+  }
+  if (t~.category == TC_POINTER) {
+    typeToString(out, t~.elementType);
+    bufPushChar(out, 126); // '~'
+    return;
+  }
+  if (t~.category == TC_STRUCT) {
+    bufPushBytes(out, t~.name~.lexPtr, t~.name~.lexLen);
+    return;
+  }
+  if (t~.category == TC_ERROR) {
+    var s0 = "<error-type>";
+    bufPushBytes(out, &s0[0], len(s0));
+    return;
+  }
+  if (t~.category == TC_INT) {
+    var s1 = "int";
+    bufPushBytes(out, &s1[0], len(s1));
+    return;
+  }
+  if (t~.category == TC_FLOAT) {
+    var s2 = "float";
+    bufPushBytes(out, &s2[0], len(s2));
+    return;
+  }
+  if (t~.category == TC_BYTE) {
+    var s3 = "byte";
+    bufPushBytes(out, &s3[0], len(s3));
+    return;
+  }
+  if (t~.category == TC_BOOL) {
+    var s4 = "bool";
+    bufPushBytes(out, &s4[0], len(s4));
+    return;
+  }
+  if (t~.category == TC_VOID) {
+    var s5 = "void";
+    bufPushBytes(out, &s5[0], len(s5));
+    return;
+  }
+  die(83); // unhandled type in typeToString
+}
+
+// ---------------------------------------------------------------------------
+// Params
+// ---------------------------------------------------------------------------
+
+struct Param {
+  name Token~,
+  type Type~
+}
+
+def newParam(name Token~, type Type~) Param~ {
+  var p = Param~(alloc(8));
+  p~.name = name;
+  p~.type = type;
+  return p;
+}
+
+// ---------------------------------------------------------------------------
+// Symbols
+// ---------------------------------------------------------------------------
+
+struct Symbol {
+  kind int,
+  id int,
+  node Node~,       // VAR_STMT / FUNCTION_STMT / STRUCT_STMT node
+  param Param~,     // for PARAM symbols
+  // backend bookkeeping:
+  globalLoc int,    // data-segment address of a global variable
+  localLoc int,     // distance of a local from the function base pointer
+  isGlobal bool,
+  isAddressTaken bool,
+  hasGlobalLoc bool,
+  hasLocalLoc bool,
+  inHoisted bool
+}
+
+var gNextSymbolId = 0;
+
+def newSymbol(kind int) Symbol~ {
+  var s = Symbol~(alloc(32));
+  s~.kind = kind;
+  s~.id = gNextSymbolId;
+  gNextSymbolId = gNextSymbolId + 1;
+  s~.node = Node~(0);
+  s~.param = Param~(0);
+  return s;
+}
+
+def variableSymbol(node Node~, isGlobal bool) Symbol~ {
+  var s = newSymbol(SK_VARIABLE);
+  s~.node = node;
+  s~.isGlobal = isGlobal;
+  return s;
+}
+
+def functionSymbol(node Node~) Symbol~ {
+  var s = newSymbol(SK_FUNCTION);
+  s~.node = node;
+  return s;
+}
+
+def paramSymbol(param Param~) Symbol~ {
+  var s = newSymbol(SK_PARAM);
+  s~.param = param;
+  return s;
+}
+
+def structSymbol(node Node~) Symbol~ {
+  var s = newSymbol(SK_STRUCT);
+  s~.node = node;
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Scopes
+// ---------------------------------------------------------------------------
+
+struct Scope {
+  parent Scope~,
+  names Vec~,  // Vec of Str~
+  syms Vec~    // Vec of Symbol~
+}
+
+def scopeNew(parent Scope~) Scope~ {
+  var s = Scope~(alloc(12));
+  s~.parent = parent;
+  s~.names = vecNew();
+  s~.syms = vecNew();
+  return s;
+}
+
+def scopeDefine(s Scope~, name Str~, sym Symbol~) {
+  vecPush(s~.names, int(name));
+  vecPush(s~.syms, int(sym));
+}
+
+def scopeFindDirect(s Scope~, name Str~) Symbol~ {
+  for (var i = 0; i < s~.names~.count; i = i + 1) {
+    if (strEq(Str~(vecGet(s~.names, i)), name)) {
+      return Symbol~(vecGet(s~.syms, i));
+    }
+  }
+  return Symbol~(0);
+}
+
+def scopeHasDirect(s Scope~, name Str~) bool {
+  return int(scopeFindDirect(s, name)) != 0;
+}
+
+// Filters for scopeLookup, mirroring the lookup filters used in the
+// reference resolver.
+var LOOKUP_ANY = 0;
+// Variables must be visited already or global; params/functions/structs pass.
+var LOOKUP_VISIBLE_SYMBOLS = 1;
+
+def lookupFilterAccepts(filter int, sym Symbol~) bool {
+  if (filter == LOOKUP_ANY) {
+    return true;
+  }
+  // LOOKUP_VISIBLE_SYMBOLS
+  if (sym~.kind == SK_PARAM || sym~.kind == SK_FUNCTION || sym~.kind == SK_STRUCT) {
+    return true;
+  }
+  // SK_VARIABLE
+  return sym~.node~.visited || sym~.isGlobal;
+}
+
+def scopeLookup(s Scope~, name Str~, filter int) Symbol~ {
+  var sym = scopeFindDirect(s, name);
+  if (int(sym) != 0 && lookupFilterAccepts(filter, sym)) {
+    return sym;
+  }
+  if (int(s~.parent) != 0) {
+    return scopeLookup(s~.parent, name, filter);
+  }
+  return Symbol~(0);
+}
+
+// ---------------------------------------------------------------------------
+// Nodes
+//
+// Field usage by kind:
+//   ASSIGN_EXPR:      tokA=operator, a=left, b=right
+//   BINARY_EXPR:      tokA=operator, a=left, b=right
+//   CALL_EXPR:        tokA=paren, a=callee, list=args
+//   CAST_EXPR:        tokA=token, typeA=target type, a=value
+//   DEREF_EXPR:       tokA=operator, a=value
+//   DOT_EXPR:         tokA=dot, tokB=identifier, a=callee
+//   GROUP_EXPR:       a=expression
+//   INDEX_EXPR:       tokA=bracket, a=callee, b=index
+//   LEN_EXPR:         a=value, resolvedLength
+//   LIST_EXPR:        tokA=bracket, listKind, list=values (LIST),
+//                     a=value + repeatLen (REPEAT)
+//   LITERAL_EXPR:     typeA=literal type, litInt/litFloat/litBool/litStr,
+//                     decStr (canonical int emission), lexeme (float lexeme)
+//   LOGICAL_EXPR:     tokA=operator, a=left, b=right
+//   UNARY_EXPR:       tokA=operator, a=value
+//   VARIABLE_EXPR:    tokA=name, symbol=resolvedSymbol
+//   BLOCK_STMT:       list=statements, scope
+//   EXPRESSION_STMT:  a=expression
+//   FUNCTION_STMT:    tokA=name, params, typeA=returnType, list=body block,
+//                     scope, hasBody, hostModule, isExported, symbol, hoisted
+//   IF_STMT:          a=expression, b=thenBranch, c=elseBranch
+//   LOOP_CONTROL_STMT:tokA=keyword
+//   PRINT_STMT:       tokA=keyword, a=expression
+//   RETURN_STMT:      tokA=keyword, a=value (may be null)
+//   STRUCT_STMT:      tokA=name, params=members, symbol
+//   VAR_STMT:         tokA=name, a=initializer, typeA=declared type (may be
+//                     null = infer), symbol
+//   WHILE_STMT:       a=expression, b=body, c=increment (may be null)
+// ---------------------------------------------------------------------------
+
+struct Node {
+  kind int,
+  resolvedType Type~,
+  tokA Token~,
+  tokB Token~,
+  a Node~,
+  b Node~,
+  c Node~,
+  list Vec~,
+  typeA Type~,
+  litInt int,
+  litFloat float,
+  litStr Str~,
+  lexeme Str~,
+  decStr Str~,
+  listKind int,
+  repeatLen int,
+  params Vec~,
+  scope Scope~,
+  symbol Symbol~,
+  hoisted Vec~,
+  hostModule Str~,
+  isLiveAtEnd int, // -1 = not filled in yet, 0 = false, 1 = true
+  resolvedLength int,
+  strLoc int,      // backend: data segment location of string literal
+  litBool bool,
+  isExported bool,
+  hasBody bool,
+  hasResolvedLength bool,
+  visited bool,    // resolver bookkeeping
+  walked bool,     // resolver bookkeeping
+  skipEmit bool    // backend bookkeeping
+}
+
+def newNode(kind int) Node~ {
+  // 24 i32/ptr/float fields * 4 bytes + 7 bool bytes = 103 bytes
+  var n = Node~(alloc(103));
+  n~.kind = kind;
+  n~.resolvedType = Type~(0);
+  n~.tokA = Token~(0);
+  n~.tokB = Token~(0);
+  n~.a = Node~(0);
+  n~.b = Node~(0);
+  n~.c = Node~(0);
+  n~.list = Vec~(0);
+  n~.typeA = Type~(0);
+  n~.litStr = Str~(0);
+  n~.lexeme = Str~(0);
+  n~.decStr = Str~(0);
+  n~.params = Vec~(0);
+  n~.scope = Scope~(0);
+  n~.symbol = Symbol~(0);
+  n~.hoisted = Vec~(0);
+  n~.hostModule = Str~(0);
+  n~.isLiveAtEnd = -1;
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// Context: global compilation state (mirrors ast.Context)
+// ---------------------------------------------------------------------------
+
+var gGlobalScope Scope~ = scopeNew(Scope~(0));
+// Interned string literals: parallel key/node vectors.
+var gStrLitKeys Vec~ = vecNew();
+var gStrLitNodes Vec~ = vecNew();
+// Top-level statements in parse order.
+var gTopLevel Vec~ = vecNew();
+// Global variable statements in initialization (dependency) order;
+// filled in by the resolver.
+var gGlobalInitOrder Vec~ = vecNew();
+
+def strLitLookup(s Str~) Node~ {
+  for (var i = 0; i < gStrLitKeys~.count; i = i + 1) {
+    if (strEq(Str~(vecGet(gStrLitKeys, i)), s)) {
+      return Node~(vecGet(gStrLitNodes, i));
+    }
+  }
+  return Node~(0);
+}
+
+def strLitIntern(s Str~, node Node~) {
+  vecPush(gStrLitKeys, int(s));
+  vecPush(gStrLitNodes, int(node));
+}
+
+// Registers a built-in function with no puff-level body.
+def defineBuiltin(name Str~, params Vec~, returnType Type~) {
+  var node = newNode(NK_FUNCTION_STMT);
+  node~.tokA = fakeToken(T_IDENTIFIER, name, Token~(0));
+  node~.params = params;
+  node~.typeA = returnType;
+  node~.hasBody = false;
+  node~.symbol = functionSymbol(node);
+  scopeDefine(gGlobalScope, name, node~.symbol);
+}
+
+def staticStr(p byte~, n int) Str~ {
+  return strCopy(p, n);
+}
+
+// Defines the built-in functions __memcpy__, __sqrt__, __heap_end__, and
+// __grow_heap__ with the same symbol ids as the reference compiler.
+// Must be called exactly once, before parsing.
+def initContext() {
+  var sMemcpy = "__memcpy__";
+  var sSrc = "src";
+  var sDst = "dst";
+  var sNumBytes = "numBytes";
+  var memcpyParams = vecNew();
+  vecPush(memcpyParams, int(newParam(fakeToken(T_IDENTIFIER, staticStr(&sSrc[0], len(sSrc)), Token~(0)), ptrType(gTypeByte))));
+  vecPush(memcpyParams, int(newParam(fakeToken(T_IDENTIFIER, staticStr(&sDst[0], len(sDst)), Token~(0)), ptrType(gTypeByte))));
+  vecPush(memcpyParams, int(newParam(fakeToken(T_IDENTIFIER, staticStr(&sNumBytes[0], len(sNumBytes)), Token~(0)), gTypeInt)));
+  defineBuiltin(staticStr(&sMemcpy[0], len(sMemcpy)), memcpyParams, gTypeVoid);
+
+  var sSqrt = "__sqrt__";
+  var sX = "x";
+  var sqrtParams = vecNew();
+  vecPush(sqrtParams, int(newParam(fakeToken(T_IDENTIFIER, staticStr(&sX[0], len(sX)), Token~(0)), gTypeFloat)));
+  defineBuiltin(staticStr(&sSqrt[0], len(sSqrt)), sqrtParams, gTypeFloat);
+
+  var sHeapEnd = "__heap_end__";
+  defineBuiltin(staticStr(&sHeapEnd[0], len(sHeapEnd)), vecNew(), gTypeInt);
+
+  var sGrow = "__grow_heap__";
+  var sNumPages = "numPages";
+  var growParams = vecNew();
+  vecPush(growParams, int(newParam(fakeToken(T_IDENTIFIER, staticStr(&sNumPages[0], len(sNumPages)), Token~(0)), gTypeInt)));
+  defineBuiltin(staticStr(&sGrow[0], len(sGrow)), growParams, gTypeInt);
+}

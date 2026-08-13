@@ -1,0 +1,644 @@
+// scanner.puff
+// Token definitions and scanner, ported from src/tokens.ts + src/scanner.ts.
+
+// TokenType constants. NOTE: values must mirror the TokenType enum in
+// src/tokens.ts, and are ordered so that a scanner matching tokens to input
+// will choose longer tokens when input can match multiple tokens.
+var T_IDENTIFIER = 0;
+var T_STRING = 1;
+var T_SINGLE_QUOTE_STRING = 2;
+var T_NUMBER_DECIMAL = 3;
+var T_NUMBER_HEX = 4;
+var T_NUMBER = 5;
+var T_COMMENT = 6;
+var T_LEFT_PAREN = 7;
+var T_RIGHT_PAREN = 8;
+var T_LEFT_BRACE = 9;
+var T_RIGHT_BRACE = 10;
+var T_LEFT_BRACKET = 11;
+var T_RIGHT_BRACKET = 12;
+var T_COMMA = 13;
+var T_DOT = 14;
+var T_SEMICOLON = 15;
+var T_TILDE = 16;
+var T_BANG_EQUAL = 17;
+var T_BANG = 18;
+var T_EQUAL_EQUAL = 19;
+var T_EQUAL = 20;
+var T_GREATER_EQUAL = 21;
+var T_GREATER = 22;
+var T_LESS_EQUAL = 23;
+var T_LESS = 24;
+var T_AMP_AMP = 25;
+var T_AMP = 26;
+var T_BAR_BAR = 27;
+var T_MINUS_EQUAL = 28;
+var T_MINUS = 29;
+var T_PLUS_EQUAL = 30;
+var T_PLUS = 31;
+var T_SLASH_EQUAL = 32;
+var T_SLASH = 33;
+var T_STAR_EQUAL = 34;
+var T_STAR = 35;
+var T_PERCENT_EQUAL = 36;
+var T_PERCENT = 37;
+var T_BYTE = 38;
+var T_BOOL = 39;
+var T_BREAK = 40;
+var T_CONTINUE = 41;
+var T_DEF = 42;
+var T_ELSE = 43;
+var T_EXPORT = 44;
+var T_FALSE = 45;
+var T_FOR = 46;
+var T_FLOAT = 47;
+var T_IF = 48;
+var T_IMPORT = 49;
+var T_INT = 50;
+var T_LEN = 51;
+var T_PRINT = 52;
+var T_RETURN = 53;
+var T_STRUCT = 54;
+var T_TRUE = 55;
+var T_VAR = 56;
+var T_VOID = 57;
+var T_WHILE = 58;
+var T_EOF = 59;
+
+// The program source. Set once by main before scanning.
+var gSource Buf~ = bufNew();
+
+struct Token {
+  type int,
+  // Lexeme: for tokens scanned from source, [lexStart, lexStart+lexLen) into
+  // gSource. Fake tokens store a static lexeme pointer instead.
+  // NOTE: like in the reference compiler, a token's lexeme need not equal
+  // source[offset..offset+lexLen); lexemes may be used to determine operator
+  // function while `offset` should only be used for error reporting.
+  lexPtr byte~,
+  lexLen int,
+  litInt int,     // int/hex/char literal value (i32, wrapping)
+  litFloat float, // float literal value
+  litStr Str~,    // string literal value (contents between quotes)
+  decStr Str~,    // canonical decimal string for int/hex literal emission
+  offset int,
+  hasSource bool  // false for fake tokens with no location provider
+}
+
+def tokenNew(type int, lexPtr byte~, lexLen int, offset int) Token~ {
+  var t = Token~(alloc(40));
+  t~.type = type;
+  t~.lexPtr = lexPtr;
+  t~.lexLen = lexLen;
+  t~.litStr = Str~(0);
+  t~.decStr = Str~(0);
+  t~.offset = offset;
+  t~.hasSource = true;
+  return t;
+}
+
+def fakeToken(type int, lexeme Str~, locationProvider Token~) Token~ {
+  var t = Token~(alloc(40));
+  t~.type = type;
+  t~.lexPtr = lexeme~.data;
+  t~.lexLen = lexeme~.count;
+  t~.litStr = Str~(0);
+  t~.decStr = Str~(0);
+  if (int(locationProvider) != 0) {
+    t~.offset = locationProvider~.offset;
+    t~.hasSource = locationProvider~.hasSource;
+  } else {
+    t~.offset = 0;
+    t~.hasSource = false;
+  }
+  return t;
+}
+
+def tokenLexemeStr(t Token~) Str~ {
+  return strNew(t~.lexPtr, t~.lexLen);
+}
+
+// Returns 1-based line number of the token.
+def tokenLine(t Token~) int {
+  if (!t~.hasSource) {
+    return 1;
+  }
+  var line = 1;
+  for (var i = 0; i < t~.offset; i = i + 1) {
+    if (int((gSource~.data + i)~) == 10) {
+      line = line + 1;
+    }
+  }
+  return line;
+}
+
+// Appends the token's source line (with an optional caret pointer line)
+// to the given buffer.
+def tokenLineStrTo(out Buf~, t Token~, showPointer bool) {
+  var src = gSource~.data;
+  var srcLen = gSource~.count;
+  var start = 0;
+  for (var i = 0; i < t~.offset; i = i + 1) {
+    if (int((src + i)~) == 10) {
+      start = i + 1;
+    }
+  }
+  var end = t~.offset + t~.lexLen;
+  for (var j = end; j < srcLen; j = j + 1) {
+    if (int((src + j)~) == 10) {
+      end = j;
+      break;
+    }
+  }
+  bufPushBytes(out, src + start, end - start);
+  if (showPointer) {
+    bufPushChar(out, 10);
+    for (var k = 0; k < t~.offset - start; k = k + 1) {
+      bufPushChar(out, 32);
+    }
+    bufPushChar(out, 94); // '^'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Error reporting (shared by all compiler passes)
+// ---------------------------------------------------------------------------
+
+// List of Str~ error messages formatted as "<line>: <msg>".
+var gErrors Vec~ = vecNew();
+// Scratch buffer for building the current error message.
+var gErrBuf Buf~ = bufNew();
+
+def errBegin(line int) {
+  gErrBuf~.count = 0;
+  bufPushInt(gErrBuf, line);
+  bufPushChar(gErrBuf, 58); // ':'
+  bufPushChar(gErrBuf, 32); // ' '
+}
+
+def errStr(s Str~) {
+  bufPushBytes(gErrBuf, s~.data, s~.count);
+}
+
+def errRaw(p byte~, n int) {
+  bufPushBytes(gErrBuf, p, n);
+}
+
+def errChar(c int) {
+  bufPushChar(gErrBuf, c);
+}
+
+def errInt(x int) {
+  bufPushInt(gErrBuf, x);
+}
+
+def errEnd() {
+  vecPush(gErrors, int(strFromBuf(gErrBuf)));
+}
+
+def numErrors() int {
+  return gErrors~.count;
+}
+
+// ---------------------------------------------------------------------------
+// Keyword table
+// ---------------------------------------------------------------------------
+
+// Str~ for each keyword, indexed by (tokenType - T_BYTE).
+var gKeywords Vec~ = makeKeywords();
+
+def kwAdd(t Vec~, p byte~, n int) {
+  vecPush(t, int(strCopy(p, n)));
+}
+
+def makeKeywords() Vec~ {
+  var t = vecNew();
+  var s0 = "byte"; kwAdd(t, &s0[0], len(s0));
+  var s1 = "bool"; kwAdd(t, &s1[0], len(s1));
+  var s2 = "break"; kwAdd(t, &s2[0], len(s2));
+  var s3 = "continue"; kwAdd(t, &s3[0], len(s3));
+  var s4 = "def"; kwAdd(t, &s4[0], len(s4));
+  var s5 = "else"; kwAdd(t, &s5[0], len(s5));
+  var s6 = "export"; kwAdd(t, &s6[0], len(s6));
+  var s7 = "false"; kwAdd(t, &s7[0], len(s7));
+  var s8 = "for"; kwAdd(t, &s8[0], len(s8));
+  var s9 = "float"; kwAdd(t, &s9[0], len(s9));
+  var s10 = "if"; kwAdd(t, &s10[0], len(s10));
+  var s11 = "import"; kwAdd(t, &s11[0], len(s11));
+  var s12 = "int"; kwAdd(t, &s12[0], len(s12));
+  var s13 = "len"; kwAdd(t, &s13[0], len(s13));
+  var s14 = "print"; kwAdd(t, &s14[0], len(s14));
+  var s15 = "return"; kwAdd(t, &s15[0], len(s15));
+  var s16 = "struct"; kwAdd(t, &s16[0], len(s16));
+  var s17 = "true"; kwAdd(t, &s17[0], len(s17));
+  var s18 = "var"; kwAdd(t, &s18[0], len(s18));
+  var s19 = "void"; kwAdd(t, &s19[0], len(s19));
+  var s20 = "while"; kwAdd(t, &s20[0], len(s20));
+  return t;
+}
+
+def keywordStr(tokenType int) Str~ {
+  return Str~(vecGet(gKeywords, tokenType - T_BYTE));
+}
+
+// ---------------------------------------------------------------------------
+// Scanner
+// ---------------------------------------------------------------------------
+
+def isDigit(c int) bool {
+  return c >= 48 && c <= 57;
+}
+
+def isHexDigit(c int) bool {
+  return isDigit(c) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+}
+
+def isAlpha(c int) bool {
+  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c == 95;
+}
+
+def isAlphaNumeric(c int) bool {
+  return isAlpha(c) || isDigit(c);
+}
+
+def isWhitespace(c int) bool {
+  // Mirrors the ASCII subset of the /\s/ regex class:
+  // space, \t, \n, \v, \f, \r
+  return c == 32 || c == 9 || c == 10 || c == 11 || c == 12 || c == 13;
+}
+
+def srcByte(i int) int {
+  return int((gSource~.data + i)~);
+}
+
+// Match helpers below return the length of the match starting at `pos`,
+// or 0 if there is no match. They mirror the TokenPattern regexes.
+
+def matchIdentifier(pos int) int {
+  var n = gSource~.count;
+  if (pos >= n || !isAlpha(srcByte(pos))) {
+    return 0;
+  }
+  var i = pos + 1;
+  while (i < n && isAlphaNumeric(srcByte(i))) {
+    i = i + 1;
+  }
+  return i - pos;
+}
+
+// Matches a quoted string with the given quote char (no escapes).
+def matchQuoted(pos int, quote int) int {
+  var n = gSource~.count;
+  if (pos >= n || srcByte(pos) != quote) {
+    return 0;
+  }
+  var i = pos + 1;
+  while (i < n && srcByte(i) != quote) {
+    i = i + 1;
+  }
+  if (i >= n) {
+    return 0; // unterminated
+  }
+  return i + 1 - pos;
+}
+
+// Matches /\d+\.\d*/
+def matchNumberDecimal(pos int) int {
+  var n = gSource~.count;
+  var i = pos;
+  while (i < n && isDigit(srcByte(i))) {
+    i = i + 1;
+  }
+  if (i == pos || i >= n || srcByte(i) != 46) {
+    return 0;
+  }
+  i = i + 1;
+  while (i < n && isDigit(srcByte(i))) {
+    i = i + 1;
+  }
+  return i - pos;
+}
+
+// Matches /0x[a-fA-F0-9]+/
+def matchNumberHex(pos int) int {
+  var n = gSource~.count;
+  if (pos >= n || srcByte(pos) != 48) {
+    return 0;
+  }
+  if (pos + 1 >= n || srcByte(pos + 1) != 120) {
+    return 0;
+  }
+  var i = pos + 2;
+  while (i < n && isHexDigit(srcByte(i))) {
+    i = i + 1;
+  }
+  if (i == pos + 2) {
+    return 0;
+  }
+  return i - pos;
+}
+
+// Matches /\d+/
+def matchNumber(pos int) int {
+  var n = gSource~.count;
+  var i = pos;
+  while (i < n && isDigit(srcByte(i))) {
+    i = i + 1;
+  }
+  return i - pos;
+}
+
+// Matches /\/\/.*/
+def matchComment(pos int) int {
+  var n = gSource~.count;
+  if (pos + 1 >= n || srcByte(pos) != 47 || srcByte(pos + 1) != 47) {
+    return 0;
+  }
+  var i = pos + 2;
+  while (i < n && srcByte(i) != 10) {
+    i = i + 1;
+  }
+  return i - pos;
+}
+
+// Matches a 1-char token.
+def match1(pos int, c int) int {
+  if (pos < gSource~.count && srcByte(pos) == c) {
+    return 1;
+  }
+  return 0;
+}
+
+// Matches a 2-char token.
+def match2(pos int, c1 int, c2 int) int {
+  var n = gSource~.count;
+  if (pos + 1 < n && srcByte(pos) == c1 && srcByte(pos + 1) == c2) {
+    return 2;
+  }
+  return 0;
+}
+
+// Tries to match the pattern for token type `t` at `pos`.
+// Mirrors TokenPattern in src/tokens.ts for non-keyword token types.
+def matchPattern(t int, pos int) int {
+  if (t == T_IDENTIFIER) { return matchIdentifier(pos); }
+  if (t == T_STRING) { return matchQuoted(pos, 34); }
+  if (t == T_SINGLE_QUOTE_STRING) { return matchQuoted(pos, 39); }
+  if (t == T_NUMBER_DECIMAL) { return matchNumberDecimal(pos); }
+  if (t == T_NUMBER_HEX) { return matchNumberHex(pos); }
+  if (t == T_NUMBER) { return matchNumber(pos); }
+  if (t == T_COMMENT) { return matchComment(pos); }
+  if (t == T_LEFT_PAREN) { return match1(pos, 40); }
+  if (t == T_RIGHT_PAREN) { return match1(pos, 41); }
+  if (t == T_LEFT_BRACE) { return match1(pos, 123); }
+  if (t == T_RIGHT_BRACE) { return match1(pos, 125); }
+  if (t == T_LEFT_BRACKET) { return match1(pos, 91); }
+  if (t == T_RIGHT_BRACKET) { return match1(pos, 93); }
+  if (t == T_COMMA) { return match1(pos, 44); }
+  if (t == T_DOT) { return match1(pos, 46); }
+  if (t == T_SEMICOLON) { return match1(pos, 59); }
+  if (t == T_TILDE) { return match1(pos, 126); }
+  if (t == T_BANG_EQUAL) { return match2(pos, 33, 61); }
+  if (t == T_BANG) { return match1(pos, 33); }
+  if (t == T_EQUAL_EQUAL) { return match2(pos, 61, 61); }
+  if (t == T_EQUAL) { return match1(pos, 61); }
+  if (t == T_GREATER_EQUAL) { return match2(pos, 62, 61); }
+  if (t == T_GREATER) { return match1(pos, 62); }
+  if (t == T_LESS_EQUAL) { return match2(pos, 60, 61); }
+  if (t == T_LESS) { return match1(pos, 60); }
+  if (t == T_AMP_AMP) { return match2(pos, 38, 38); }
+  if (t == T_AMP) { return match1(pos, 38); }
+  if (t == T_BAR_BAR) { return match2(pos, 124, 124); }
+  if (t == T_MINUS_EQUAL) { return match2(pos, 45, 61); }
+  if (t == T_MINUS) { return match1(pos, 45); }
+  if (t == T_PLUS_EQUAL) { return match2(pos, 43, 61); }
+  if (t == T_PLUS) { return match1(pos, 43); }
+  if (t == T_SLASH_EQUAL) { return match2(pos, 47, 61); }
+  if (t == T_SLASH) { return match1(pos, 47); }
+  if (t == T_STAR_EQUAL) { return match2(pos, 42, 61); }
+  if (t == T_STAR) { return match1(pos, 42); }
+  if (t == T_PERCENT_EQUAL) { return match2(pos, 37, 61); }
+  if (t == T_PERCENT) { return match1(pos, 37); }
+  return 0;
+}
+
+// Parses the decimal digits at [start, start+length) as an i32 (wrapping).
+def parseIntLexeme(start int, length int) int {
+  var v = 0;
+  for (var i = 0; i < length; i = i + 1) {
+    v = v * 10 + (srcByte(start + i) - 48);
+  }
+  return v;
+}
+
+def hexDigitValue(c int) int {
+  if (isDigit(c)) {
+    return c - 48;
+  }
+  if (c >= 97) {
+    return c - 97 + 10;
+  }
+  return c - 65 + 10;
+}
+
+// Parses the hex literal (starting with "0x") as an i32 (wrapping).
+def parseHexLexeme(start int, length int) int {
+  var v = 0;
+  for (var i = 2; i < length; i = i + 1) {
+    v = v * 16 + hexDigitValue(srcByte(start + i));
+  }
+  return v;
+}
+
+// Parses the float literal digits as f32. The integer part is accumulated
+// exactly in i32 while it fits (then converted, which rounds correctly);
+// we only fall back to lossy f32 accumulation for huge values.
+def parseFloatLexeme(start int, length int) float {
+  var v = 0.0;
+  var intPart = 0;
+  var overflowed = false;
+  var i = 0;
+  while (i < length && srcByte(start + i) != 46) {
+    var d = srcByte(start + i) - 48;
+    if (!overflowed) {
+      if (intPart > (2147483647 - d) / 10) {
+        overflowed = true;
+        v = float(intPart);
+      } else {
+        intPart = intPart * 10 + d;
+      }
+    }
+    if (overflowed) {
+      v = v * 10.0 + float(d);
+    }
+    i = i + 1;
+  }
+  if (!overflowed) {
+    v = float(intPart);
+  }
+  i = i + 1; // skip '.'
+  var scale = 0.1;
+  while (i < length) {
+    v = v + float(srcByte(start + i) - 48) * scale;
+    scale = scale / 10.0;
+    i = i + 1;
+  }
+  return v;
+}
+
+// Builds the canonical decimal string for the lexeme's numeric value.
+// For decimal literals this is the lexeme without leading zeros; for hex
+// literals we convert to the unsigned decimal representation (this matches
+// how the reference compiler prints `parseInt(lexeme)` values).
+def decStrForDecimal(start int, length int) Str~ {
+  var i = 0;
+  while (i < length - 1 && srcByte(start + i) == 48) {
+    i = i + 1;
+  }
+  return strCopy(gSource~.data + start + i, length - i);
+}
+
+def decStrForHex(start int, length int) Str~ {
+  // Little-endian decimal digit accumulator; u32 values need at most 10
+  // digits. Hex literals longer than 8 digits are reported as errors by the
+  // scanner (so their exact value never matters), but we still keep enough
+  // headroom to avoid overflowing on them.
+  var digits = [0; 16];
+  var numDigits = 1;
+  for (var i = 2; i < length; i = i + 1) {
+    if (numDigits >= 15) {
+      break;
+    }
+    var carry = hexDigitValue(srcByte(start + i));
+    for (var j = 0; j < numDigits; j = j + 1) {
+      var x = digits[j] * 16 + carry;
+      digits[j] = x % 10;
+      carry = x / 10;
+    }
+    while (carry > 0 && numDigits < 15) {
+      digits[numDigits] = carry % 10;
+      carry = carry / 10;
+      numDigits = numDigits + 1;
+    }
+  }
+  var b = bufNew();
+  while (numDigits > 0) {
+    numDigits = numDigits - 1;
+    bufPushChar(b, 48 + digits[numDigits]);
+  }
+  return strFromBuf(b);
+}
+
+// The scanned token stream (Vec of Token~).
+var gTokens Vec~ = vecNew();
+
+def tokensPush(t Token~) {
+  vecPush(gTokens, int(t));
+}
+
+def tokenAt(i int) Token~ {
+  return Token~(vecGet(gTokens, i));
+}
+
+def numTokens() int {
+  return gTokens~.count;
+}
+
+// Scans gSource into gTokens. Ported from scanTokens in src/scanner.ts.
+def scanTokens() {
+  var srcLen = gSource~.count;
+  var src = gSource~.data;
+  var current = 0;
+  while (current < srcLen) {
+    // 1. check if current lexeme is whitespace
+    if (isWhitespace(srcByte(current))) {
+      while (current < srcLen && isWhitespace(srcByte(current))) {
+        current = current + 1;
+      }
+      continue;
+    }
+    // 2. check if current lexeme matches a valid token (not including keywords)
+    var matched = false;
+    for (var t = T_IDENTIFIER; t < T_BYTE; t = t + 1) {
+      var mLen = matchPattern(t, current);
+      if (mLen > 0) {
+        if (t == T_IDENTIFIER) {
+          // Check if it's also a keyword and set token type accordingly
+          var outType = t;
+          for (var k = T_BYTE; k <= T_WHILE; k = k + 1) {
+            var kw = keywordStr(k);
+            if (kw~.count == mLen && strEqRaw(kw, src + current, mLen)) {
+              outType = k;
+              break;
+            }
+          }
+          tokensPush(tokenNew(outType, src + current, mLen, current));
+        } else if (t == T_STRING) {
+          var tok = tokenNew(t, src + current, mLen, current);
+          tok~.litStr = strNew(src + current + 1, mLen - 2);
+          tokensPush(tok);
+        } else if (t == T_SINGLE_QUOTE_STRING) {
+          var tok2 = tokenNew(t, src + current, mLen, current);
+          tok2~.litStr = strNew(src + current + 1, mLen - 2);
+          tokensPush(tok2);
+        } else if (t == T_NUMBER_DECIMAL) {
+          var tok3 = tokenNew(t, src + current, mLen, current);
+          tok3~.litFloat = parseFloatLexeme(current, mLen);
+          tokensPush(tok3);
+        } else if (t == T_NUMBER) {
+          var tok4 = tokenNew(t, src + current, mLen, current);
+          tok4~.litInt = parseIntLexeme(current, mLen);
+          tok4~.decStr = decStrForDecimal(current, mLen);
+          tokensPush(tok4);
+        } else if (t == T_NUMBER_HEX) {
+          var tok5 = tokenNew(t, src + current, mLen, current);
+          tok5~.litInt = parseHexLexeme(current, mLen);
+          tok5~.decStr = decStrForHex(current, mLen);
+          tokensPush(tok5);
+          if (mLen > 2 + 8) {
+            errBegin(tokenLine(tok5));
+            var m0 = "Hex literal does not fit in any numeric type.";
+            errRaw(&m0[0], len(m0));
+            errEnd();
+          }
+        } else if (t != T_COMMENT) {
+          // comments are skipped and not added as tokens
+          tokensPush(tokenNew(t, src + current, mLen, current));
+        }
+        current = current + mLen;
+        // Lexemes are scanned to exactly 1 valid token
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      continue;
+    }
+    // 3. current lexeme is an invalid character. report error and advance.
+    var line = 1;
+    for (var i = 0; i < current; i = i + 1) {
+      if (srcByte(i) == 10) {
+        line = line + 1;
+      }
+    }
+    errBegin(line);
+    var m1 = "Unexpected character '";
+    errRaw(&m1[0], len(m1));
+    errChar(srcByte(current));
+    var m2 = "'.";
+    errRaw(&m2[0], len(m2));
+    errEnd();
+    current = current + 1;
+  }
+
+  var eofLex = strEmpty();
+  var eof = Token~(alloc(40));
+  eof~.type = T_EOF;
+  eof~.lexPtr = eofLex~.data;
+  eof~.lexLen = 0;
+  eof~.litStr = Str~(0);
+  eof~.decStr = Str~(0);
+  eof~.offset = current;
+  eof~.hasSource = true;
+  tokensPush(eof);
+}

@@ -10,6 +10,34 @@ Puffscript is a toy imperative programming language that compiles to WebAssembly
 - Fixed-length, contiguous multi-dimensional arrays
 - String literals are syntactic sugar for UTF-8 encoded byte arrays
 - Pointers, value semantics, and pointer arithmetic
+- Imported and exported functions for host interop (I/O etc.)
+- **Self-hosting**: the compiler is implemented both in TypeScript (`src/`) and in puffscript itself (`selfhost/`), and the self-hosted compiler compiles itself
+
+# Self-hosting
+
+`selfhost/` contains a complete puffscript compiler written in puffscript. It reads
+puffscript source from stdin (via the imported `getchar` host function) and writes
+WebAssembly text format to stdout (via `putchar`), reporting errors on stderr (via
+`puterr`). Its output is byte-identical to the TypeScript reference compiler's.
+
+To bootstrap it and verify the fixpoint (stage2 = compiler compiled by itself,
+stage3 = compiler compiled by stage2, stage2 == stage3):
+
+```
+npm install
+npm run bootstrap
+```
+
+Compile a program with the bootstrapped compiler:
+
+```
+node dist/tools/run.js test/stage2.wasm --stdin program.puff --stdout program.wat
+node dist/tools/wat2wasm.js program.wat -o program.wasm
+node dist/tools/run.js program.wasm
+```
+
+The self-hosted compiler is also exercised by `npm test`, which checks the
+bootstrap fixpoint and output equivalence with the reference compiler.
 
 # Language reference
 
@@ -106,7 +134,15 @@ def main() {
 }
 ```
 
-Numerics cannot be casted directly to pointer types, so pointers can only be initialized with other pointers or by taking the address of variables. This discourages the use of null pointers.
+`&` can also take the address of struct members and dereference expressions, e.g. `&point.x` or `&node~.next`.
+
+`int` values can be casted to and from pointer types via call syntax, which allows user code to implement its own allocators (see `selfhost/util.puff`). Pointer-to-struct casts use the type name, e.g. `Node~(p)`:
+
+```
+var p = int~(1048576); // an int~ pointing at the 1MB byte offset
+var q = Node~(p);      // reinterpreted as a Node~
+var r = int(q);        // back to an int
+```
 
 **Structs**
 
@@ -136,10 +172,36 @@ def fib(n int) int {
 
 Functions can only be defined at the top-level. Puffscript does not support first-class functions nor function pointers.
 
+**Imported and exported functions**
+
+Host functions can be imported from the WASM `env` module with `import def`, and puffscript functions can be exported from the compiled module with `export def` (`main` is always exported):
+
+```
+import def getchar() int;    // read a byte from the host (-1 on EOF)
+import def putchar(c int);   // write a byte to the host
+
+export def echo() {
+  var c = getchar();
+  while (c >= 0) {
+    putchar(c);
+    c = getchar();
+  }
+}
+
+def main() {
+  echo();
+}
+```
+
+The CLI runner (`tools/run.ts`) provides `getchar`/`putchar`/`puterr`/`exit` wired to stdin/stdout/stderr, which is enough for programs — like the self-hosted compiler — to do file I/O.
+
+**Heap and builtins**
+
+Compiled programs place their in-memory stack at `[0, 4MB)` and static data at `[4MB, 8MB)`; memory beyond the initial 8MB is free for user-managed heaps. The builtins `__heap_end__() int` and `__grow_heap__(numPages int) int` wrap the WASM `memory.size`/`memory.grow` instructions, and `__memcpy__(src byte~, dst byte~, numBytes int)` and `__sqrt__(x float) float` are also available.
+
 TODOs:
 
 - Function overloading (defining multiple functions with the same name but different parameters)
-- Exported and imported functions
 - Default arguments
 
 **Control flow**

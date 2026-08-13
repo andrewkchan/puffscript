@@ -1,0 +1,897 @@
+// resolver.puff
+// Type resolution and checking, ported from src/resolver.ts.
+//
+// 1. Resolve AST types and type check all expressions + initializers
+// 2. Determine dependencies of global symbols
+// 3. Match `return` statements to enclosing functions
+// 4. Check arity of function calls
+// 5. Ensure no cyclic variable or type declarations
+//
+// NOTE: like elsewhere in the self-hosted compiler, recursive calls must not
+// appear in `var` initializers (the resolver's own cycle detection forbids
+// it), so declare-then-assign is used instead.
+
+// Stack of Scope~. Reassigned (swapped) during out-of-order global resolution.
+var rScopes Vec~ = vecNew();
+// Stack of FunctionStmt Node~. Also swapped during out-of-order resolution.
+var rFunctionStack Vec~ = vecNew();
+// Stack of WhileStmt Node~.
+var rLoopStack Vec~ = vecNew();
+// Stack of all AST nodes walked from a top-level statement (incl. non-tree
+// dependency edges). Used for symbol cycle detection.
+var rWalked Vec~ = vecNew();
+
+def rPeekScope() Scope~ {
+  return Scope~(vecPeek(rScopes));
+}
+
+def rPushScope(scope Scope~) {
+  vecPush(rScopes, int(scope));
+}
+
+def rPopScope() {
+  vecPop(rScopes);
+}
+
+def rPeekFunction() Node~ {
+  if (rFunctionStack~.count > 0) {
+    return Node~(vecPeek(rFunctionStack));
+  }
+  return Node~(0);
+}
+
+def rPeekLoop() Node~ {
+  if (rLoopStack~.count > 0) {
+    return Node~(vecPeek(rLoopStack));
+  }
+  return Node~(0);
+}
+
+def rPreVisit(node Node~) {
+  node~.walked = true;
+  vecPush(rWalked, int(node));
+}
+
+def rPostVisit(node Node~) {
+  if (node~.kind == NK_VAR_STMT) {
+    var isGlobal = rScopes~.count == 1;
+    if (isGlobal) {
+      vecPush(gGlobalInitOrder, int(node));
+    }
+  }
+  node~.walked = false;
+  vecPop(rWalked);
+}
+
+// ---------------------------------------------------------------------------
+// Error helpers
+// ---------------------------------------------------------------------------
+
+def rErrType(t Type~) {
+  typeToString(gErrBuf, t);
+}
+
+def rErrLexeme(tok Token~) {
+  errRaw(tok~.lexPtr, tok~.lexLen);
+}
+
+// Reports "Cannot implicitly convert operand to '<type>'."
+def rErrCannotConvert(token Token~, type Type~) {
+  errBegin(tokenLine(token));
+  var m0 = "Cannot implicitly convert operand to '";
+  errRaw(&m0[0], len(m0));
+  rErrType(type);
+  var m1 = "'.";
+  errRaw(&m1[0], len(m1));
+  errEnd();
+}
+
+// Reports "Invalid operand types for binary operator '<op>'."
+def rErrInvalidBinaryOperands(operator Token~) {
+  errBegin(tokenLine(operator));
+  var m0 = "Invalid operand types for binary operator '";
+  errRaw(&m0[0], len(m0));
+  rErrLexeme(operator);
+  var m1 = "'.";
+  errRaw(&m1[0], len(m1));
+  errEnd();
+}
+
+// Reports "Cannot compare <a> to <b>."
+def rErrCannotCompare(operator Token~, a Type~, b Type~) {
+  errBegin(tokenLine(operator));
+  var m0 = "Cannot compare ";
+  errRaw(&m0[0], len(m0));
+  rErrType(a);
+  var m1 = " to ";
+  errRaw(&m1[0], len(m1));
+  rErrType(b);
+  var m2 = ".";
+  errRaw(&m2[0], len(m2));
+  errEnd();
+}
+
+// ---------------------------------------------------------------------------
+// Coercion
+// ---------------------------------------------------------------------------
+
+// Resolve `node` while attempting to coerce it to `type`.
+// If coercion is possible, returns `node` wrapped in a cast expression if needed.
+// If coercion is not possible, reports an error at `token` and returns `node`.
+def resolveNodeWithCoercion(node Node~, isLiveAtEnd bool, type Type~, token Token~) Node~ {
+  var out = node;
+  resolveNode(node, isLiveAtEnd);
+  if (!typeIsEqual(node~.resolvedType, type)) {
+    var coercible = canCoerce(node~.resolvedType, type) ||
+      (isNumberLiteral(node) && canCoerceNumberLiteralNode(node, type));
+    if (coercible) {
+      var castNode = newNode(NK_CAST_EXPR);
+      castNode~.tokA = fakeToken(T_EOF, strEmpty(), Token~(0));
+      castNode~.typeA = type;
+      castNode~.a = node;
+      out = castNode;
+      resolveNode(out, isLiveAtEnd);
+    } else {
+      rErrCannotConvert(token, type);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// resolveType
+// ---------------------------------------------------------------------------
+
+// Is called when visiting AST nodes with explicit type names, e.g. variable
+// declarations, struct member declarations, function param/return type
+// declarations.
+// - Resolves any struct types s.t. they are tagged with associated struct
+//   declaration.
+// - Detects cyclic type declarations.
+// Returns a resolved type (can be the same object but mutated).
+def resolveType(type Type~, isForPointerElement bool) Type~ {
+  if (type~.category == TC_ARRAY) {
+    type~.elementType = resolveType(type~.elementType, false);
+    return type;
+  }
+  if (type~.category == TC_STRUCT) {
+    var symbol = scopeLookup(rPeekScope(), tokenLexemeStr(type~.name), LOOKUP_ANY);
+    if (int(symbol) == 0 || symbol~.kind != SK_STRUCT) {
+      errBegin(tokenLine(type~.name));
+      var m0 = "Undefined typename '";
+      errRaw(&m0[0], len(m0));
+      rErrLexeme(type~.name);
+      var m1 = "'.";
+      errRaw(&m1[0], len(m1));
+      errEnd();
+      return gTypeError;
+    }
+    if (!symbol~.node~.visited) {
+      // Structs can be defined and used out-of-order.
+      // Resolve the out-of-order struct definition. This is needed to
+      // detect cyclic declarations in case this variable expression
+      // is part of a global's initializer.
+      resolveNode(symbol~.node, true);
+    } else if (symbol~.node~.walked && !isForPointerElement) {
+      // We're resolving a struct definition with a member that
+      // (directly/indirectly) depends on itself.
+      // Note pointer element types can be 'cyclic'.
+      errBegin(tokenLine(type~.name));
+      var m2 = "Cyclic member declaration for struct '";
+      errRaw(&m2[0], len(m2));
+      rErrLexeme(symbol~.node~.tokA);
+      var m3 = "'.";
+      errRaw(&m3[0], len(m3));
+      errEnd();
+    }
+    type~.resolvedStruct = symbol~.node;
+    return type;
+  }
+  if (type~.category == TC_POINTER) {
+    type~.elementType = resolveType(type~.elementType, true);
+    return type;
+  }
+  return type;
+}
+
+// ---------------------------------------------------------------------------
+// resolveNode: expressions
+// ---------------------------------------------------------------------------
+
+def rBinaryExpr(op Node~, isLiveAtEnd bool) {
+  resolveNode(op~.a, isLiveAtEnd);
+  resolveNode(op~.b, isLiveAtEnd);
+  var opType = op~.tokA~.type;
+  if (opType == T_LESS || opType == T_LESS_EQUAL || opType == T_GREATER || opType == T_GREATER_EQUAL) {
+    var lct = getLowestCommonNumeric(op~.a~.resolvedType, op~.b~.resolvedType);
+    if (int(lct) != 0) {
+      op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, lct, op~.tokA);
+      op~.b = resolveNodeWithCoercion(op~.b, isLiveAtEnd, lct, op~.tokA);
+    } else {
+      rErrInvalidBinaryOperands(op~.tokA);
+    }
+    op~.resolvedType = gTypeBool;
+    return;
+  }
+  if (opType == T_BANG_EQUAL || opType == T_EQUAL_EQUAL) {
+    var leftType = op~.a~.resolvedType;
+    var rightType = op~.b~.resolvedType;
+    if (isScalar(leftType) && isScalar(rightType)) {
+      var lct2 = getLowestCommonNumeric(leftType, rightType);
+      if (int(lct2) != 0) {
+        op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, lct2, op~.tokA);
+        op~.b = resolveNodeWithCoercion(op~.b, isLiveAtEnd, lct2, op~.tokA);
+      } else if (!typeIsEqual(leftType, rightType)) {
+        rErrCannotCompare(op~.tokA, leftType, rightType);
+      }
+    } else {
+      // TODO: We should auto-generate equals operator (member-wise equals) for structs.
+      // memcmp is a bad idea because of float equality (NaNs, zero).
+      rErrCannotCompare(op~.tokA, leftType, rightType);
+    }
+    op~.resolvedType = gTypeBool;
+    return;
+  }
+  if (opType == T_PERCENT) {
+    var lct3 = getLowestCommonNumeric(op~.a~.resolvedType, op~.b~.resolvedType);
+    if (int(lct3) != 0 && (lct3~.category == TC_INT || lct3~.category == TC_BYTE)) {
+      op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, lct3, op~.tokA);
+      op~.b = resolveNodeWithCoercion(op~.b, isLiveAtEnd, lct3, op~.tokA);
+    } else {
+      rErrInvalidBinaryOperands(op~.tokA);
+    }
+    op~.resolvedType = op~.a~.resolvedType;
+    return;
+  }
+  // + - * /
+  var lt = op~.a~.resolvedType;
+  var rt = op~.b~.resolvedType;
+  var lct4 = getLowestCommonNumeric(lt, rt);
+  if (int(lct4) != 0) {
+    op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, lct4, op~.tokA);
+    op~.b = resolveNodeWithCoercion(op~.b, isLiveAtEnd, lct4, op~.tokA);
+    op~.resolvedType = lct4;
+    return;
+  }
+  if (opType == T_PLUS || opType == T_MINUS) {
+    // Rules for pointer arithmetic:
+    // 1. Only allowed between a pointer and a numeric. Operating on 2 pointers is not allowed.
+    // 2. (numeric + pointer) and (pointer + numeric) are both allowed.
+    // 3. (pointer - numeric) is allowed, (numeric - pointer) is not allowed.
+    if (lt~.category == TC_POINTER && isNumeric(rt)) {
+      var sizeLit = newNode(NK_LITERAL_EXPR);
+      sizeLit~.typeA = gTypeInt;
+      sizeLit~.litInt = sizeOf(lt~.elementType);
+      var mul = newNode(NK_BINARY_EXPR);
+      mul~.a = sizeLit;
+      var sStar = "*";
+      mul~.tokA = fakeToken(T_STAR, strCopy(&sStar[0], len(sStar)), Token~(0));
+      mul~.b = resolveNodeWithCoercion(op~.b, isLiveAtEnd, gTypeInt, op~.tokA);
+      op~.b = mul;
+      resolveNode(op~.b, isLiveAtEnd);
+      op~.resolvedType = lt;
+      return;
+    }
+    if (rt~.category == TC_POINTER && isNumeric(lt) && opType == T_PLUS) {
+      var sizeLit2 = newNode(NK_LITERAL_EXPR);
+      sizeLit2~.typeA = gTypeInt;
+      sizeLit2~.litInt = sizeOf(rt~.elementType);
+      var mul2 = newNode(NK_BINARY_EXPR);
+      mul2~.a = sizeLit2;
+      var sStar2 = "*";
+      mul2~.tokA = fakeToken(T_STAR, strCopy(&sStar2[0], len(sStar2)), Token~(0));
+      mul2~.b = resolveNodeWithCoercion(op~.a, isLiveAtEnd, gTypeInt, op~.tokA);
+      op~.a = mul2;
+      resolveNode(op~.a, isLiveAtEnd);
+      op~.resolvedType = rt;
+      return;
+    }
+    rErrInvalidBinaryOperands(op~.tokA);
+    op~.resolvedType = gTypeError;
+    return;
+  }
+  if (!(lt~.category == TC_ERROR) && !(rt~.category == TC_ERROR)) {
+    rErrInvalidBinaryOperands(op~.tokA);
+  }
+  op~.resolvedType = gTypeError;
+}
+
+def rCallExpr(op Node~, isLiveAtEnd bool) {
+  resolveNode(op~.a, isLiveAtEnd);
+  // If we ever add first-class functions, this should instead
+  // check resolvedType of callee is "Function" type
+  if (op~.a~.kind != NK_VARIABLE_EXPR) {
+    errBegin(tokenLine(op~.tokA));
+    var m0 = "Cannot call this type.";
+    errRaw(&m0[0], len(m0));
+    errEnd();
+  } else {
+    var callee = op~.a;
+    var symbol = callee~.symbol;
+    if (int(symbol) == 0) {
+      // We already reported 'Undefined symbol' error earlier when resolving the callee VariableExpr
+    } else if ((symbol~.kind == SK_FUNCTION && op~.tokA~.type == T_LEFT_PAREN) ||
+               (symbol~.kind == SK_STRUCT && op~.tokA~.type == T_LEFT_BRACE)) {
+      var fnNode = symbol~.node;
+      var params = fnNode~.params;
+      // Check arity and types of arguments
+      if (op~.list~.count != params~.count) {
+        errBegin(tokenLine(op~.tokA));
+        var m1 = "Expected ";
+        errRaw(&m1[0], len(m1));
+        errInt(params~.count);
+        var m2 = " arguments but got ";
+        errRaw(&m2[0], len(m2));
+        errInt(op~.list~.count);
+        var m3 = " in call to ";
+        errRaw(&m3[0], len(m3));
+        rErrLexeme(fnNode~.tokA);
+        var m4 = ".";
+        errRaw(&m4[0], len(m4));
+        errEnd();
+      } else {
+        for (var i = 0; i < op~.list~.count; i = i + 1) {
+          var param = Param~(vecGet(params, i));
+          var argNode = Node~(vecGet(op~.list, i));
+          argNode = resolveNodeWithCoercion(argNode, isLiveAtEnd, param~.type, op~.tokA);
+          vecSet(op~.list, i, int(argNode));
+        }
+      }
+      if (symbol~.kind == SK_FUNCTION) {
+        op~.resolvedType = fnNode~.typeA;
+      } else {
+        op~.resolvedType = resolvedStructType(fnNode);
+      }
+    } else {
+      errBegin(tokenLine(callee~.tokA));
+      var m5 = "Cannot ";
+      errRaw(&m5[0], len(m5));
+      if (op~.tokA~.type == T_LEFT_BRACE) {
+        var m6 = "construct";
+        errRaw(&m6[0], len(m6));
+      } else {
+        var m7 = "call";
+        errRaw(&m7[0], len(m7));
+      }
+      var m8 = " this type.";
+      errRaw(&m8[0], len(m8));
+      errEnd();
+    }
+  }
+  if (int(op~.resolvedType) == 0) {
+    op~.resolvedType = gTypeError;
+  }
+}
+
+def rVariableExpr(op Node~) {
+  var symbol = scopeLookup(rPeekScope(), tokenLexemeStr(op~.tokA), LOOKUP_VISIBLE_SYMBOLS);
+  if (int(symbol) == 0) {
+    errBegin(tokenLine(op~.tokA));
+    var m0 = "Undefined symbol '";
+    errRaw(&m0[0], len(m0));
+    rErrLexeme(op~.tokA);
+    var m1 = "'.";
+    errRaw(&m1[0], len(m1));
+    errEnd();
+    op~.resolvedType = gTypeError;
+    return;
+  }
+  op~.symbol = symbol;
+  var resolveTypeFromSymbol = true;
+
+  // The symbol's declaration node (null for params).
+  var symbolDecl = Node~(0);
+  if (symbol~.kind != SK_PARAM) {
+    symbolDecl = symbol~.node;
+  }
+
+  if (int(symbolDecl) != 0 && !symbolDecl~.visited) {
+    // Globals can be declared and used out-of-order.
+    // Resolve the out-of-order global declaration. This is needed to:
+    // 1. Resolve type of this variable expression.
+    // 2. Detect cyclic declarations in case this variable expression
+    //    is part of a global's initializer.
+    var oldScopes = rScopes;
+    var oldFunctionStack = rFunctionStack;
+    // Reset stacks since we're following non-tree edge back to top-level
+    rScopes = vecNew();
+    vecPush(rScopes, int(gGlobalScope));
+    rFunctionStack = vecNew();
+    resolveNode(symbolDecl, true);
+    rScopes = oldScopes;
+    rFunctionStack = oldFunctionStack;
+  } else if (int(symbolDecl) != 0 && symbolDecl~.walked) {
+    // Detect cyclic variable declarations (declarations using this variable
+    // expr in initializer). Note `symbolDecl` may not be the cyclic variable;
+    // backtrack in the walked stack and return any variable symbol between
+    // the top and `symbolDecl`.
+    var cyclicVar = Node~(0);
+    if (symbolDecl~.kind == NK_VAR_STMT) {
+      cyclicVar = symbolDecl;
+    } else {
+      for (var i = rWalked~.count - 1; int(vecGet(rWalked, i)) != int(symbolDecl); i = i - 1) {
+        var walkedNode = Node~(vecGet(rWalked, i));
+        if (walkedNode~.kind == NK_VAR_STMT) {
+          cyclicVar = walkedNode;
+          break;
+        }
+      }
+    }
+    if (int(cyclicVar) != 0) {
+      errBegin(tokenLine(cyclicVar~.tokA));
+      var m2 = "Declaration of '";
+      errRaw(&m2[0], len(m2));
+      rErrLexeme(cyclicVar~.tokA);
+      var m3 = "' is cyclic. Defined here:";
+      errRaw(&m3[0], len(m3));
+      errChar(10);
+      tokenLineStrTo(gErrBuf, cyclicVar~.tokA, true);
+      errEnd();
+      op~.resolvedType = gTypeError;
+      resolveTypeFromSymbol = false;
+    }
+  }
+  if (resolveTypeFromSymbol) {
+    if (symbol~.kind == SK_FUNCTION || symbol~.kind == SK_STRUCT) {
+      // TODO: Either make `CallExpr` only use names and not sub-expressions,
+      // or add a function type
+      op~.resolvedType = gTypeVoid;
+    } else if (symbol~.kind == SK_PARAM) {
+      op~.resolvedType = symbol~.param~.type;
+    } else {
+      // SK_VARIABLE: we should've filled this in after resolving the declaration
+      op~.resolvedType = symbol~.node~.typeA;
+    }
+  }
+}
+
+def rUnaryExpr(op Node~, isLiveAtEnd bool) {
+  var opType = op~.tokA~.type;
+  if (opType == T_BANG) {
+    op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, gTypeBool, op~.tokA);
+    op~.resolvedType = gTypeBool;
+    return;
+  }
+  if (opType == T_MINUS) {
+    resolveNode(op~.a, isLiveAtEnd);
+    if (!isNumeric(op~.a~.resolvedType)) {
+      errBegin(tokenLine(op~.tokA));
+      var m0 = "Invalid operand type for unary operator '-'.";
+      errRaw(&m0[0], len(m0));
+      errEnd();
+      op~.resolvedType = gTypeInt;
+    } else {
+      if (op~.a~.resolvedType~.category == TC_BYTE) {
+        op~.a = resolveNodeWithCoercion(op~.a, isLiveAtEnd, gTypeInt, op~.tokA);
+      }
+      op~.resolvedType = op~.a~.resolvedType;
+    }
+    return;
+  }
+  // '&'
+  resolveNode(op~.a, isLiveAtEnd);
+  if (isValidElementType(op~.a~.resolvedType)) {
+    if (op~.a~.kind == NK_VARIABLE_EXPR) {
+      var symbol = op~.a~.symbol;
+      if (int(symbol) != 0 && (symbol~.kind == SK_PARAM || symbol~.kind == SK_VARIABLE)) {
+        symbol~.isAddressTaken = true;
+      }
+      op~.resolvedType = ptrType(op~.a~.resolvedType);
+    } else if (op~.a~.kind == NK_INDEX_EXPR || op~.a~.kind == NK_DOT_EXPR || op~.a~.kind == NK_DEREF_EXPR) {
+      op~.resolvedType = ptrType(op~.a~.resolvedType);
+    }
+  }
+  if (int(op~.resolvedType) == 0) {
+    errBegin(tokenLine(op~.tokA));
+    var m1 = "Invalid operand for unary operator '&'.";
+    errRaw(&m1[0], len(m1));
+    errEnd();
+    op~.resolvedType = gTypeError;
+  }
+}
+
+def rListExpr(op Node~, isLiveAtEnd bool) {
+  if (op~.listKind == LK_LIST) {
+    var elementType = Type~(0);
+    if (op~.list~.count > 0) {
+      var first = Node~(vecGet(op~.list, 0));
+      resolveNode(first, isLiveAtEnd);
+      elementType = first~.resolvedType;
+      for (var i = 1; i < op~.list~.count; i = i + 1) {
+        var item = Node~(vecGet(op~.list, i));
+        resolveNode(item, isLiveAtEnd);
+        if (!typeIsEqual(item~.resolvedType, elementType)) {
+          elementType = Type~(0);
+          break;
+        }
+      }
+    }
+    // Note resolving an empty array will always throw a resolve error
+    // even if a type specifier for e.g. declaration or return value
+    // is given. Callers should not resolve the literal in that case.
+    if (int(elementType) != 0 && isValidElementType(elementType)) {
+      op~.resolvedType = arrayType(elementType, op~.list~.count);
+    } else {
+      if (op~.list~.count == 0) {
+        errBegin(tokenLine(op~.tokA));
+        var m0 = "Zero-length arrays are not allowed.";
+        errRaw(&m0[0], len(m0));
+        errEnd();
+      } else {
+        errBegin(tokenLine(op~.tokA));
+        var m1 = "Cannot infer type for literal.";
+        errRaw(&m1[0], len(m1));
+        errEnd();
+      }
+      op~.resolvedType = gTypeError;
+    }
+    return;
+  }
+  // repeat initializer
+  resolveNode(op~.a, isLiveAtEnd);
+  if (op~.repeatLen == 0) {
+    errBegin(tokenLine(op~.tokA));
+    var m2 = "Zero-length arrays are not allowed.";
+    errRaw(&m2[0], len(m2));
+    errEnd();
+    op~.resolvedType = gTypeError;
+  } else if (!isValidElementType(op~.a~.resolvedType)) {
+    errBegin(tokenLine(op~.tokA));
+    var m3 = "Cannot infer type for literal.";
+    errRaw(&m3[0], len(m3));
+    errEnd();
+    op~.resolvedType = gTypeError;
+  } else {
+    op~.resolvedType = arrayType(op~.a~.resolvedType, op~.repeatLen);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// resolveNode: statements
+// ---------------------------------------------------------------------------
+
+def rFunctionStmt(op Node~) {
+  // 1. Resolve parameter and return types
+  for (var i = 0; i < op~.params~.count; i = i + 1) {
+    var param = Param~(vecGet(op~.params, i));
+    param~.type = resolveType(param~.type, false);
+  }
+  op~.typeA = resolveType(op~.typeA, false);
+  if (op~.hasBody) {
+    rPushScope(op~.scope);
+    vecPush(rFunctionStack, int(op));
+    // 2. Ensure all return statements match the return type of the function
+    // 3. If the function has a return type, ensure all control paths return a value
+    var missingReturn = false;
+    if (op~.list~.count > 0) {
+      var prevIsLiveAtEnd = true; // functions start as live
+      for (var j = 0; j < op~.list~.count; j = j + 1) {
+        var stmt = Node~(vecGet(op~.list, j));
+        resolveNode(stmt, prevIsLiveAtEnd);
+        prevIsLiveAtEnd = stmt~.isLiveAtEnd == 1;
+      }
+      var lastStmt = Node~(vecGet(op~.list, op~.list~.count - 1));
+      if (lastStmt~.isLiveAtEnd == 1) {
+        missingReturn = true;
+      }
+    } else {
+      missingReturn = true;
+    }
+    if (missingReturn && !(op~.typeA~.category == TC_VOID) && !(op~.typeA~.category == TC_ERROR)) {
+      errBegin(tokenLine(op~.tokA));
+      var m0 = "All control paths for ";
+      errRaw(&m0[0], len(m0));
+      rErrLexeme(op~.tokA);
+      var m1 = " must return a value of type '";
+      errRaw(&m1[0], len(m1));
+      rErrType(op~.typeA);
+      var m2 = "'.";
+      errRaw(&m2[0], len(m2));
+      errEnd();
+    }
+    vecPop(rFunctionStack);
+    rPopScope();
+  }
+}
+
+def rVarStmt(op Node~, isLiveAtEnd bool) {
+  resolveNode(op~.a, isLiveAtEnd);
+  if (int(op~.a~.resolvedType) == 0) {
+    die(91); // variable initializer failed to resolve
+  }
+  if (int(op~.typeA) == 0) {
+    op~.typeA = op~.a~.resolvedType;
+  } else {
+    op~.typeA = resolveType(op~.typeA, false);
+    if (!typeIsEqual(op~.typeA, op~.a~.resolvedType)) {
+      if (!(op~.a~.resolvedType~.category == TC_ERROR) && !(op~.typeA~.category == TC_ERROR)) {
+        errBegin(tokenLine(op~.tokA));
+        var m0 = "Cannot assign value of type '";
+        errRaw(&m0[0], len(m0));
+        rErrType(op~.a~.resolvedType);
+        var m1 = "' to variable of type '";
+        errRaw(&m1[0], len(m1));
+        rErrType(op~.typeA);
+        var m2 = "'.";
+        errRaw(&m2[0], len(m2));
+        errEnd();
+      }
+    }
+  }
+  var inFunction = rPeekFunction();
+  if (int(inFunction) != 0 && inFunction~.hasBody && int(inFunction~.scope) != int(rPeekScope()) && int(op~.symbol) != 0) {
+    if (int(inFunction~.hoisted) == 0) {
+      inFunction~.hoisted = vecNew();
+    }
+    // insertion-ordered set
+    if (!op~.symbol~.inHoisted) {
+      op~.symbol~.inHoisted = true;
+      vecPush(inFunction~.hoisted, int(op~.symbol));
+    }
+  }
+  op~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+}
+
+def boolToLive(b bool) int {
+  if (b) {
+    return 1;
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// resolveNode dispatcher
+// ---------------------------------------------------------------------------
+
+def resolveNode(node Node~, isLiveAtEnd bool) {
+  if (node~.visited) {
+    return;
+  }
+  node~.visited = true;
+  rPreVisit(node);
+  var kind = node~.kind;
+
+  if (kind == NK_ASSIGN_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    node~.b = resolveNodeWithCoercion(node~.b, isLiveAtEnd, node~.a~.resolvedType, node~.tokA);
+    node~.resolvedType = node~.a~.resolvedType;
+  } else if (kind == NK_BINARY_EXPR) {
+    rBinaryExpr(node, isLiveAtEnd);
+  } else if (kind == NK_CALL_EXPR) {
+    rCallExpr(node, isLiveAtEnd);
+  } else if (kind == NK_CAST_EXPR) {
+    node~.typeA = resolveType(node~.typeA, false);
+    resolveNode(node~.a, isLiveAtEnd);
+    if (!canCast(node~.a~.resolvedType, node~.typeA)) {
+      errBegin(tokenLine(node~.tokA));
+      var m0 = "Cannot cast from ";
+      errRaw(&m0[0], len(m0));
+      rErrType(node~.a~.resolvedType);
+      var m1 = " to ";
+      errRaw(&m1[0], len(m1));
+      rErrType(node~.typeA);
+      var m2 = ".";
+      errRaw(&m2[0], len(m2));
+      errEnd();
+    }
+    node~.resolvedType = node~.typeA;
+  } else if (kind == NK_DEREF_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    var valueType = node~.a~.resolvedType;
+    if (int(valueType) != 0 && valueType~.category == TC_POINTER) {
+      node~.resolvedType = valueType~.elementType;
+    } else {
+      if (int(valueType) == 0 || valueType~.category != TC_ERROR) {
+        errBegin(tokenLine(node~.tokA));
+        var m3 = "Invalid operand for dereferencing operator '~'.";
+        errRaw(&m3[0], len(m3));
+        errEnd();
+      }
+      node~.resolvedType = gTypeError;
+    }
+  } else if (kind == NK_DOT_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    var calleeType = node~.a~.resolvedType;
+    if (int(calleeType) == 0 || calleeType~.category != TC_STRUCT) {
+      if (!(calleeType~.category == TC_ERROR)) {
+        errBegin(tokenLine(node~.tokA));
+        var m4 = "Invalid operand for member access operator '.'.";
+        errRaw(&m4[0], len(m4));
+        errEnd();
+      }
+      node~.resolvedType = gTypeError;
+    } else {
+      var structNode = calleeType~.resolvedStruct;
+      if (int(structNode) != 0) {
+        for (var i = 0; i < structNode~.params~.count; i = i + 1) {
+          var member = Param~(vecGet(structNode~.params, i));
+          if (strEq(tokenLexemeStr(member~.name), tokenLexemeStr(node~.tokB))) {
+            node~.resolvedType = member~.type;
+            break;
+          }
+        }
+      }
+      if (int(node~.resolvedType) == 0) {
+        errBegin(tokenLine(node~.tokB));
+        var m5 = "Struct ";
+        errRaw(&m5[0], len(m5));
+        if (int(structNode) != 0) {
+          rErrLexeme(structNode~.tokA);
+        } else {
+          var m6 = "undefined";
+          errRaw(&m6[0], len(m6));
+        }
+        var m7 = " has no member '";
+        errRaw(&m7[0], len(m7));
+        rErrLexeme(node~.tokB);
+        var m8 = "'.";
+        errRaw(&m8[0], len(m8));
+        errEnd();
+        node~.resolvedType = gTypeError;
+      }
+    }
+  } else if (kind == NK_GROUP_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    node~.resolvedType = node~.a~.resolvedType;
+  } else if (kind == NK_INDEX_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    resolveNode(node~.b, isLiveAtEnd);
+    if (node~.a~.resolvedType~.category != TC_ARRAY) {
+      errBegin(tokenLine(node~.tokA));
+      var m9 = "Index operator requires array type.";
+      errRaw(&m9[0], len(m9));
+      errEnd();
+      node~.resolvedType = gTypeError;
+    } else {
+      var arrType = node~.a~.resolvedType;
+      var idxCat = node~.b~.resolvedType~.category;
+      if (idxCat == TC_INT || idxCat == TC_BYTE) {
+        node~.resolvedType = arrType~.elementType;
+      } else {
+        errBegin(tokenLine(node~.tokA));
+        var m10 = "Index operator requires int or byte type.";
+        errRaw(&m10[0], len(m10));
+        errEnd();
+        node~.resolvedType = arrType~.elementType;
+      }
+    }
+  } else if (kind == NK_LEN_EXPR) {
+    resolveNode(node~.a, isLiveAtEnd);
+    var lenValType = node~.a~.resolvedType;
+    if (int(lenValType) != 0 && lenValType~.category == TC_ARRAY) {
+      node~.resolvedLength = lenValType~.length;
+    } else {
+      node~.resolvedLength = 0;
+    }
+    node~.hasResolvedLength = true;
+  } else if (kind == NK_LIST_EXPR) {
+    rListExpr(node, isLiveAtEnd);
+  } else if (kind == NK_LITERAL_EXPR) {
+    node~.resolvedType = node~.typeA;
+  } else if (kind == NK_LOGICAL_EXPR) {
+    node~.a = resolveNodeWithCoercion(node~.a, isLiveAtEnd, gTypeBool, node~.tokA);
+    node~.b = resolveNodeWithCoercion(node~.b, isLiveAtEnd, gTypeBool, node~.tokA);
+    node~.resolvedType = gTypeBool;
+  } else if (kind == NK_UNARY_EXPR) {
+    rUnaryExpr(node, isLiveAtEnd);
+  } else if (kind == NK_VARIABLE_EXPR) {
+    rVariableExpr(node);
+  } else if (kind == NK_BLOCK_STMT) {
+    rPushScope(node~.scope);
+    if (node~.list~.count > 0) {
+      var prevIsLiveAtEnd = isLiveAtEnd;
+      for (var i = 0; i < node~.list~.count; i = i + 1) {
+        var stmt = Node~(vecGet(node~.list, i));
+        resolveNode(stmt, prevIsLiveAtEnd);
+        prevIsLiveAtEnd = stmt~.isLiveAtEnd == 1;
+      }
+      var lastStmt = Node~(vecGet(node~.list, node~.list~.count - 1));
+      node~.isLiveAtEnd = lastStmt~.isLiveAtEnd;
+    } else {
+      node~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+    }
+    rPopScope();
+  } else if (kind == NK_EXPRESSION_STMT) {
+    resolveNode(node~.a, isLiveAtEnd);
+    node~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+  } else if (kind == NK_FUNCTION_STMT) {
+    rFunctionStmt(node);
+  } else if (kind == NK_IF_STMT) {
+    resolveNode(node~.a, isLiveAtEnd);
+    resolveNode(node~.b, isLiveAtEnd);
+    var isLiveAfterThen = node~.b~.isLiveAtEnd == 1;
+    var isLiveAfterElse = isLiveAtEnd;
+    if (int(node~.c) != 0) {
+      resolveNode(node~.c, isLiveAtEnd);
+      isLiveAfterElse = node~.c~.isLiveAtEnd == 1;
+    }
+    node~.isLiveAtEnd = boolToLive(isLiveAfterThen || isLiveAfterElse);
+  } else if (kind == NK_LOOP_CONTROL_STMT) {
+    if (int(rPeekLoop()) == 0) {
+      errBegin(tokenLine(node~.tokA));
+      var m11 = "Cannot ";
+      errRaw(&m11[0], len(m11));
+      rErrLexeme(node~.tokA);
+      var m12 = " outside a loop.";
+      errRaw(&m12[0], len(m12));
+      errEnd();
+    }
+    // Control flow is considered live as long as we don't hit a "return".
+    // This is not affected by breaks/continues.
+    node~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+  } else if (kind == NK_PRINT_STMT) {
+    resolveNode(node~.a, isLiveAtEnd);
+    var valueType = node~.a~.resolvedType;
+    if (valueType~.category == TC_VOID || valueType~.category == TC_POINTER || valueType~.category == TC_STRUCT) {
+      // TODO: allow hex address printing for pointers
+      errBegin(tokenLine(node~.tokA));
+      var m13 = "Cannot print value of type '";
+      errRaw(&m13[0], len(m13));
+      rErrType(valueType);
+      var m14 = "'.";
+      errRaw(&m14[0], len(m14));
+      errEnd();
+    }
+    node~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+  } else if (kind == NK_RETURN_STMT) {
+    var inFunction = rPeekFunction();
+    if (int(inFunction) == 0) {
+      errBegin(tokenLine(node~.tokA));
+      var m15 = "Cannot return from top-level code.";
+      errRaw(&m15[0], len(m15));
+      errEnd();
+    } else if (int(node~.a) != 0) {
+      resolveNode(node~.a, isLiveAtEnd);
+      if (!typeIsEqual(inFunction~.typeA, node~.a~.resolvedType)) {
+        errBegin(tokenLine(node~.tokA));
+        var m16 = "Expected a value of type '";
+        errRaw(&m16[0], len(m16));
+        rErrType(inFunction~.typeA);
+        var m17 = "'.";
+        errRaw(&m17[0], len(m17));
+        errEnd();
+      }
+    } else {
+      if (!(inFunction~.typeA~.category == TC_VOID)) {
+        errBegin(tokenLine(node~.tokA));
+        var m18 = "Expected a value of type '";
+        errRaw(&m18[0], len(m18));
+        rErrType(inFunction~.typeA);
+        var m19 = "'.";
+        errRaw(&m19[0], len(m19));
+        errEnd();
+      }
+    }
+    node~.isLiveAtEnd = 0;
+  } else if (kind == NK_STRUCT_STMT) {
+    for (var i = 0; i < node~.params~.count; i = i + 1) {
+      var member = Param~(vecGet(node~.params, i));
+      member~.type = resolveType(member~.type, false);
+    }
+    node~.isLiveAtEnd = boolToLive(isLiveAtEnd);
+  } else if (kind == NK_VAR_STMT) {
+    rVarStmt(node, isLiveAtEnd);
+  } else if (kind == NK_WHILE_STMT) {
+    resolveNode(node~.a, isLiveAtEnd);
+    vecPush(rLoopStack, int(node));
+    resolveNode(node~.b, isLiveAtEnd);
+    vecPop(rLoopStack);
+    if (int(node~.c) != 0) {
+      // This is an expression statement and cannot affect node.isLiveAtEnd
+      resolveNode(node~.c, isLiveAtEnd);
+    }
+    node~.isLiveAtEnd = node~.b~.isLiveAtEnd;
+  } else {
+    die(92); // unhandled node kind in resolveNode
+  }
+  rPostVisit(node);
+}
+
+// Resolves all top-level statements. Mirrors `resolve` in src/resolver.ts.
+def resolveProgram() {
+  vecPush(rScopes, int(gGlobalScope));
+  for (var i = 0; i < gTopLevel~.count; i = i + 1) {
+    var stmt = Node~(vecGet(gTopLevel, i));
+    resolveNode(stmt, true);
+  }
+}

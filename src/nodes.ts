@@ -244,14 +244,18 @@ export interface LiteralExpr extends Node {
   kind: NodeKind.LITERAL_EXPR
   value: any
   type: Type
+  // Original source lexeme for numeric literals, used to emit
+  // reproducible WAT float constants. null for synthesized literals.
+  sourceLexeme: string | null
   resolvedType: Type | null // filled in by resolver pass
 }
 
-export function literalExpr({ value, type }: { value: any; type: Type }): LiteralExpr {
+export function literalExpr({ value, type, sourceLexeme }: { value: any; type: Type; sourceLexeme?: string }): LiteralExpr {
   return {
     kind: NodeKind.LITERAL_EXPR,
     value,
     type,
+    sourceLexeme: sourceLexeme ?? null,
     resolvedType: null
   }
 }
@@ -504,6 +508,14 @@ export function canCast(from: Type, to: Type): boolean {
     // Pointers are a type escape hatch and can always be casted to/from each other.
     return true
   }
+  if (from.category === TypeCategory.INT && to.category === TypeCategory.POINTER) {
+    // Allow int-to-pointer casts so user code can implement allocators.
+    return true
+  }
+  if (from.category === TypeCategory.POINTER && to.category === TypeCategory.INT) {
+    // Allow pointer-to-int casts for pointer bookkeeping (e.g. alignment).
+    return true
+  }
   return isEqual(from, to)
 }
 
@@ -702,6 +714,12 @@ export interface FunctionStmt extends Node {
     block: Stmt[]
     scope: Scope
   } | null // "null" means the function is imported or built-in
+  // For functions imported from the host environment, the module
+  // to import from (e.g. `(import "env" "getchar" ...)`).
+  // null for normal functions and compiler built-ins.
+  hostModule: string | null
+  // Whether the function should be exported from the WASM module.
+  isExported: boolean
   symbol: FunctionSymbol | null // filled in by parser
   // After resolve pass, `hoistedLocals` should contain
   // all local variables declared in descendant scopes
@@ -711,13 +729,14 @@ export interface FunctionStmt extends Node {
 }
 
 export function functionStmt(
-  { name, params, returnType, block, scope, symbol }: {
+  { name, params, returnType, block, scope, symbol, isExported }: {
     name: Token;
     params: Param[];
     returnType: Type;
     block: Stmt[];
     scope: Scope;
-    symbol: FunctionSymbol | null
+    symbol: FunctionSymbol | null;
+    isExported?: boolean
 }): FunctionStmt {
   return {
     kind: NodeKind.FUNCTION_STMT,
@@ -728,17 +747,20 @@ export function functionStmt(
       block,
       scope
     },
+    hostModule: null,
+    isExported: isExported ?? false,
     symbol,
     hoistedLocals: null
   }
 }
 
 export function importedFunctionStmt(
-  { name, params, returnType, symbol }: {
+  { name, params, returnType, symbol, hostModule }: {
     name: Token;
     params: Param[];
     returnType: Type;
-    symbol: FunctionSymbol | null
+    symbol: FunctionSymbol | null;
+    hostModule?: string
 }): FunctionStmt {
   return {
     kind: NodeKind.FUNCTION_STMT,
@@ -746,6 +768,8 @@ export function importedFunctionStmt(
     params,
     returnType,
     body: null,
+    hostModule: hostModule ?? null,
+    isExported: false,
     symbol,
     hoistedLocals: null
   }
@@ -969,6 +993,10 @@ export class Context {
         {
           name: fakeToken(TokenType.IDENTIFIER, "dst"),
           type: ptrType(ByteType)
+        },
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "numBytes"),
+          type: IntType
         }
       ],
       returnType: VoidType,
@@ -987,8 +1015,29 @@ export class Context {
       symbol: null
     })
     sqrt.symbol = this.functionSymbol(sqrt)
+    const heapEnd = importedFunctionStmt({
+      name: fakeToken(TokenType.IDENTIFIER, "__heap_end__"),
+      params: [],
+      returnType: IntType,
+      symbol: null
+    })
+    heapEnd.symbol = this.functionSymbol(heapEnd)
+    const grow = importedFunctionStmt({
+      name: fakeToken(TokenType.IDENTIFIER, "__grow_heap__"),
+      params: [
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "numPages"),
+          type: IntType
+        },
+      ],
+      returnType: IntType,
+      symbol: null
+    })
+    grow.symbol = this.functionSymbol(grow)
     this.global.define(memcpy.name.lexeme, memcpy.symbol)
     this.global.define(sqrt.name.lexeme, sqrt.symbol)
+    this.global.define(heapEnd.name.lexeme, heapEnd.symbol)
+    this.global.define(grow.name.lexeme, grow.symbol)
   }
 
   variableSymbol(node: VarStmt, isGlobal: boolean): VariableSymbol {
@@ -1220,6 +1269,11 @@ export function astToSExpr(node: Node): string {
     case NodeKind.FUNCTION_STMT: {
       const op = node as FunctionStmt
       out += "("
+      if (op.hostModule !== null) {
+        out += "import "
+      } else if (op.isExported) {
+        out += "export "
+      }
       out += `def ${op.name.lexeme} `
       out += "("
       op.params.forEach((param, i) => {

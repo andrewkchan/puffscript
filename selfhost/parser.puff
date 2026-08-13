@@ -1,0 +1,1179 @@
+// parser.puff
+// Recursive descent parser, ported from src/parser.ts.
+//
+// The reference parser uses exceptions (ParseError) for panic-mode error
+// recovery; here we use an explicit panic flag (pPanic). Functions that can
+// "throw" set the flag; callers must check it after each call and bail out,
+// which mirrors exception unwinding (including the reference compiler's
+// behavior of not popping scopes while unwinding).
+//
+// 1. Construct AST from stream of tokens
+// 2. Create scopes for blocks and functions
+// 3. Emplace symbol declarations into scopes
+// 4. Ensure no duplicate symbols in same scope
+
+var pCurrent = 0;
+var pPanic = false;
+// Stack of Scope~.
+var pScopes Vec~ = vecNew();
+
+def pPeekScope() Scope~ {
+  return Scope~(vecPeek(pScopes));
+}
+
+def pPushScope() {
+  vecPush(pScopes, int(scopeNew(pPeekScope())));
+}
+
+def pPopScope() Scope~ {
+  return Scope~(vecPop(pScopes));
+}
+
+def pPeek() Token~ {
+  return tokenAt(pCurrent);
+}
+
+def pPrevious() Token~ {
+  return tokenAt(pCurrent - 1);
+}
+
+def pIsAtEnd() bool {
+  return pPeek()~.type == T_EOF;
+}
+
+def pAdvance() {
+  if (!pIsAtEnd()) {
+    pCurrent = pCurrent + 1;
+  }
+}
+
+// same as `pMatch`, but does not advance
+def pCheck(t int) bool {
+  if (pIsAtEnd()) {
+    return false;
+  }
+  return pPeek()~.type == t;
+}
+
+// advances and returns true if next token matches input token type,
+// else returns false
+def pMatch(t int) bool {
+  if (pCheck(t)) {
+    pAdvance();
+    return true;
+  }
+  return false;
+}
+
+// Reports an error at the given token without panicking.
+def pReportAt(tok Token~, msg byte~, msgLen int) {
+  errBegin(tokenLine(tok));
+  errRaw(msg, msgLen);
+  errEnd();
+}
+
+// Reports an error at the given token and enters panic mode
+// (the equivalent of `throw parseErrorForToken(...)`).
+def pPanicAt(tok Token~, msg byte~, msgLen int) {
+  pReportAt(tok, msg, msgLen);
+  pPanic = true;
+}
+
+// The equivalent of `throw parseError(...)`: reports at peek().
+def pPanicHere(msg byte~, msgLen int) {
+  pPanicAt(pPeek(), msg, msgLen);
+}
+
+// advances and returns the next token if it matches the input token type,
+// else reports an error with the given message and panics
+def pConsume(t int, msg byte~, msgLen int) Token~ {
+  if (pCheck(t)) {
+    var token = pPeek();
+    pAdvance();
+    return token;
+  }
+  pPanicHere(msg, msgLen);
+  return pPeek();
+}
+
+// on catching a parse error, discard tokens until we're at the beginning
+// of the next statement/declaration so we can continue parsing w/o cascading
+// errors
+def pSynchronize() {
+  pPanic = false;
+  pAdvance();
+  while (!pIsAtEnd()) {
+    if (pPrevious()~.type == T_SEMICOLON) {
+      return;
+    }
+    var t = pPeek()~.type;
+    if (t == T_DEF || t == T_STRUCT || t == T_VAR || t == T_IF || t == T_PRINT || t == T_RETURN || t == T_WHILE) {
+      return;
+    }
+    pAdvance();
+  }
+}
+
+def pTopDecl() Node~ {
+  if (pMatch(T_IMPORT)) {
+    var m0 = "Expect 'def' after 'import'.";
+    pConsume(T_DEF, &m0[0], len(m0));
+    if (pPanic) { return Node~(0); }
+    return pImportDecl();
+  }
+  if (pMatch(T_EXPORT)) {
+    var m1 = "Expect 'def' after 'export'.";
+    pConsume(T_DEF, &m1[0], len(m1));
+    if (pPanic) { return Node~(0); }
+    return pFunDecl(true);
+  }
+  if (pMatch(T_DEF)) {
+    return pFunDecl(false);
+  }
+  if (pMatch(T_STRUCT)) {
+    return pStructDecl();
+  }
+  if (pMatch(T_VAR)) {
+    return pVarDecl();
+  }
+  var m2 = "Only variable declarations and function definitions allowed at the top-level.";
+  pPanicHere(&m2[0], len(m2));
+  return Node~(0);
+}
+
+// Reports "'<name>' is already declared in this scope." at the given token.
+def pReportAlreadyDeclared(name Token~, panic bool) {
+  errBegin(tokenLine(name));
+  errChar(39); // '\''
+  errRaw(name~.lexPtr, name~.lexLen);
+  var m0 = "' is already declared in this scope.";
+  errRaw(&m0[0], len(m0));
+  errEnd();
+  if (panic) {
+    pPanic = true;
+  }
+}
+
+// Parses the parameter list of a function declaration (after the name).
+// Returns a Vec of Param~, or panics.
+def pParams() Vec~ {
+  var m0 = "Expect '(' after function name.";
+  pConsume(T_LEFT_PAREN, &m0[0], len(m0));
+  if (pPanic) { return Vec~(0); }
+  var params = vecNew();
+  while (!pCheck(T_RIGHT_PAREN) && !pIsAtEnd()) {
+    if (params~.count > 0) {
+      var m1 = "Missing comma after parameter.";
+      pConsume(T_COMMA, &m1[0], len(m1));
+      if (pPanic) { return Vec~(0); }
+    }
+    var m2 = "Expect identifier.";
+    var paramName = pConsume(T_IDENTIFIER, &m2[0], len(m2));
+    if (pPanic) { return Vec~(0); }
+    var paramType = Type~(0);
+    paramType = pType();
+    if (pPanic) { return Vec~(0); }
+    vecPush(params, int(newParam(paramName, paramType)));
+  }
+  var m3 = "Expect ')' after parameters.";
+  pConsume(T_RIGHT_PAREN, &m3[0], len(m3));
+  if (pPanic) { return Vec~(0); }
+  return params;
+}
+
+def pImportDecl() Node~ {
+  var m0 = "Expect identifier after 'def'.";
+  var name = pConsume(T_IDENTIFIER, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+
+  var params = Vec~(0);
+  params = pParams();
+  if (pPanic) { return Node~(0); }
+
+  var returnType = gTypeVoid;
+  if (!pCheck(T_SEMICOLON)) {
+    returnType = pType();
+    if (pPanic) { return Node~(0); }
+  }
+  var m1 = "Expect ';' after import declaration.";
+  pConsume(T_SEMICOLON, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+
+  var node = newNode(NK_FUNCTION_STMT);
+  node~.tokA = name;
+  node~.params = params;
+  node~.typeA = returnType;
+  node~.hasBody = false;
+  var sEnv = "env";
+  node~.hostModule = strCopy(&sEnv[0], len(sEnv));
+
+  var outerScope = pPeekScope();
+  if (scopeHasDirect(outerScope, tokenLexemeStr(name))) {
+    // Panic; we want to ignore this function and synchronize to next statement
+    pReportAlreadyDeclared(name, true);
+    return Node~(0);
+  }
+  var symbol = functionSymbol(node);
+  scopeDefine(outerScope, tokenLexemeStr(name), symbol);
+  node~.symbol = symbol;
+  return node;
+}
+
+def pFunDecl(isExported bool) Node~ {
+  var m0 = "Expect identifier after 'def'.";
+  var name = pConsume(T_IDENTIFIER, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+
+  var params = Vec~(0);
+  params = pParams();
+  if (pPanic) { return Node~(0); }
+
+  var returnType = gTypeVoid;
+  if (!pCheck(T_LEFT_BRACE)) {
+    returnType = pType();
+    if (pPanic) { return Node~(0); }
+  }
+
+  var m1 = "Expect '{' before function body.";
+  pConsume(T_LEFT_BRACE, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+  pPushScope();
+  for (var i = 0; i < params~.count; i = i + 1) {
+    var param = Param~(vecGet(params, i));
+    var scope = pPeekScope();
+    if (scopeHasDirect(scope, tokenLexemeStr(param~.name))) {
+      // Don't panic; Function body will be parsed + resolved as if duplicate doesn't exist.
+      // Calls will still be parsed + resolved with arity including duplicate.
+      pReportAlreadyDeclared(param~.name, false);
+    } else {
+      scopeDefine(scope, tokenLexemeStr(param~.name), paramSymbol(param));
+    }
+  }
+  var statements = Vec~(0);
+  statements = pBlock();
+  if (pPanic) { return Node~(0); }
+  var scope2 = pPopScope();
+
+  var node = newNode(NK_FUNCTION_STMT);
+  node~.tokA = name;
+  node~.params = params;
+  node~.typeA = returnType;
+  node~.list = statements;
+  node~.scope = scope2;
+  node~.hasBody = true;
+  node~.isExported = isExported;
+
+  var outerScope = pPeekScope();
+  if (scopeHasDirect(outerScope, tokenLexemeStr(name))) {
+    // Panic; we want to ignore this function and synchronize to next statement
+    pReportAlreadyDeclared(name, true);
+    return Node~(0);
+  }
+  var symbol = functionSymbol(node);
+  scopeDefine(outerScope, tokenLexemeStr(name), symbol);
+  node~.symbol = symbol;
+  return node;
+}
+
+def pStructDecl() Node~ {
+  var m0 = "Expect identifier after 'struct'.";
+  var name = pConsume(T_IDENTIFIER, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+
+  var m1 = "Expect '{' after struct name.";
+  pConsume(T_LEFT_BRACE, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+  var members = vecNew();
+  while (!pCheck(T_RIGHT_BRACE) && !pIsAtEnd()) {
+    if (members~.count > 0) {
+      var m2 = "Missing comma after member.";
+      pConsume(T_COMMA, &m2[0], len(m2));
+      if (pPanic) { return Node~(0); }
+    }
+    var m3 = "Expect identifier.";
+    var paramName = pConsume(T_IDENTIFIER, &m3[0], len(m3));
+    if (pPanic) { return Node~(0); }
+    var paramType = Type~(0);
+    paramType = pType();
+    if (pPanic) { return Node~(0); }
+    // check for duplicate member names
+    var isDuplicate = false;
+    for (var i = 0; i < members~.count; i = i + 1) {
+      var existing = Param~(vecGet(members, i));
+      if (strEq(tokenLexemeStr(existing~.name), tokenLexemeStr(paramName))) {
+        isDuplicate = true;
+        break;
+      }
+    }
+    if (isDuplicate) {
+      // Don't panic; Remaining members will be parsed + resolved as if duplicate doesn't exist.
+      errBegin(tokenLine(paramName));
+      errChar(39); // '\''
+      errRaw(paramName~.lexPtr, paramName~.lexLen);
+      var m4 = "' is already declared in member list.";
+      errRaw(&m4[0], len(m4));
+      errEnd();
+    } else {
+      vecPush(members, int(newParam(paramName, paramType)));
+    }
+  }
+  var m5 = "Expect '}' after member list.";
+  pConsume(T_RIGHT_BRACE, &m5[0], len(m5));
+  if (pPanic) { return Node~(0); }
+
+  var node = newNode(NK_STRUCT_STMT);
+  node~.tokA = name;
+  node~.params = members;
+
+  var scope = pPeekScope();
+  if (scopeHasDirect(scope, tokenLexemeStr(name))) {
+    // Panic; ignore this struct and synchronize to next statement
+    pReportAlreadyDeclared(name, true);
+    return Node~(0);
+  }
+  var symbol = structSymbol(node);
+  scopeDefine(scope, tokenLexemeStr(name), symbol);
+  node~.symbol = symbol;
+  return node;
+}
+
+def pVarDecl() Node~ {
+  var m0 = "Expect identifier after 'var'.";
+  var name = pConsume(T_IDENTIFIER, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+
+  // null means `infer from initializer`.
+  var varType = Type~(0);
+  if (!pCheck(T_EQUAL)) {
+    varType = pType();
+    if (pPanic) { return Node~(0); }
+  }
+  var m1 = "Expect '=' after variable declaration.";
+  pConsume(T_EQUAL, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+  var expr = Node~(0);
+  expr = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m2 = "Expect ';' after statement.";
+  pConsume(T_SEMICOLON, &m2[0], len(m2));
+  if (pPanic) { return Node~(0); }
+
+  var node = newNode(NK_VAR_STMT);
+  node~.tokA = name;
+  node~.a = expr;
+  node~.typeA = varType;
+
+  var scope = pPeekScope();
+  if (scopeHasDirect(scope, tokenLexemeStr(name))) {
+    pReportAlreadyDeclared(name, false);
+  } else {
+    var symbol = variableSymbol(node, int(scope) == int(gGlobalScope));
+    scopeDefine(scope, tokenLexemeStr(name), symbol);
+    node~.symbol = symbol;
+  }
+  return node;
+}
+
+def pStatement() Node~ {
+  if (pMatch(T_IF)) {
+    return pIfStmt();
+  }
+  if (pMatch(T_PRINT)) {
+    return pPrintStmt();
+  }
+  if (pMatch(T_WHILE)) {
+    return pWhileStmt();
+  }
+  if (pMatch(T_FOR)) {
+    return pForStmt();
+  }
+  if (pMatch(T_RETURN)) {
+    return pReturnStmt();
+  }
+  if (pMatch(T_LEFT_BRACE)) {
+    pPushScope();
+    var statements = Vec~(0);
+    statements = pBlock();
+    if (pPanic) { return Node~(0); }
+    var scope = pPopScope();
+    var node = newNode(NK_BLOCK_STMT);
+    node~.list = statements;
+    node~.scope = scope;
+    return node;
+  }
+  if (pMatch(T_BREAK) || pMatch(T_CONTINUE)) {
+    var keyword = pPrevious();
+    var m0 = "expect ';' after statement.";
+    pConsume(T_SEMICOLON, &m0[0], len(m0));
+    if (pPanic) { return Node~(0); }
+    var node2 = newNode(NK_LOOP_CONTROL_STMT);
+    node2~.tokA = keyword;
+    return node2;
+  }
+  return pExpressionStmt();
+}
+
+def pExpressionStmt() Node~ {
+  var expr = Node~(0);
+  expr = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m0 = "Expect ';' after expression statement.";
+  pConsume(T_SEMICOLON, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  var node = newNode(NK_EXPRESSION_STMT);
+  node~.a = expr;
+  return node;
+}
+
+def pIfStmt() Node~ {
+  var m0 = "Expect '(' after 'if'.";
+  pConsume(T_LEFT_PAREN, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  var expr = Node~(0);
+  expr = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m1 = "Expect ')' after if condition.";
+  pConsume(T_RIGHT_PAREN, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+
+  var thenBranch = Node~(0);
+  thenBranch = pStatement();
+  if (pPanic) { return Node~(0); }
+  var elseBranch = Node~(0);
+  if (pMatch(T_ELSE)) {
+    elseBranch = pStatement();
+    if (pPanic) { return Node~(0); }
+  }
+  var node = newNode(NK_IF_STMT);
+  node~.a = expr;
+  node~.b = thenBranch;
+  node~.c = elseBranch;
+  return node;
+}
+
+def pPrintStmt() Node~ {
+  var keyword = pPrevious();
+  var expr = Node~(0);
+  expr = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m0 = "expect ';' after print statement.";
+  pConsume(T_SEMICOLON, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  var node = newNode(NK_PRINT_STMT);
+  node~.tokA = keyword;
+  node~.a = expr;
+  return node;
+}
+
+def pReturnStmt() Node~ {
+  var keyword = pPrevious();
+  if (pMatch(T_SEMICOLON)) {
+    var node = newNode(NK_RETURN_STMT);
+    node~.tokA = keyword;
+    node~.a = Node~(0);
+    return node;
+  }
+  var value = Node~(0);
+  value = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m0 = "Expect ';' after return statement.";
+  pConsume(T_SEMICOLON, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  var node2 = newNode(NK_RETURN_STMT);
+  node2~.tokA = keyword;
+  node2~.a = value;
+  return node2;
+}
+
+def pWhileStmt() Node~ {
+  var m0 = "Expect '(' after 'while'.";
+  pConsume(T_LEFT_PAREN, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  var condition = Node~(0);
+  condition = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m1 = "Expect ')' after loop condition.";
+  pConsume(T_RIGHT_PAREN, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+
+  var body = Node~(0);
+  body = pStatement();
+  if (pPanic) { return Node~(0); }
+  var node = newNode(NK_WHILE_STMT);
+  node~.a = condition;
+  node~.b = body;
+  node~.c = Node~(0);
+  return node;
+}
+
+def pForStmt() Node~ {
+  // This is desugared into initializer, while loop, and increment statements
+  var m0 = "Expect '(' after 'for'.";
+  pConsume(T_LEFT_PAREN, &m0[0], len(m0));
+  if (pPanic) { return Node~(0); }
+  pPushScope();
+
+  var initializer = Node~(0);
+  if (pMatch(T_SEMICOLON)) {
+    initializer = Node~(0);
+  } else if (pMatch(T_VAR)) {
+    initializer = pVarDecl();
+    if (pPanic) { return Node~(0); }
+  } else {
+    initializer = pExpressionStmt();
+    if (pPanic) { return Node~(0); }
+  }
+  var condition = Node~(0);
+  if (!pCheck(T_SEMICOLON)) {
+    condition = pExpression();
+    if (pPanic) { return Node~(0); }
+  } else {
+    condition = newNode(NK_LITERAL_EXPR);
+    condition~.typeA = gTypeBool;
+    condition~.litBool = true;
+  }
+  var m1 = "Expect ';' after loop condition.";
+  pConsume(T_SEMICOLON, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+  var increment = Node~(0);
+  if (!pCheck(T_RIGHT_PAREN)) {
+    increment = pExpression();
+    if (pPanic) { return Node~(0); }
+  }
+  var m2 = "Expect ')' after for clauses.";
+  pConsume(T_RIGHT_PAREN, &m2[0], len(m2));
+  if (pPanic) { return Node~(0); }
+  pPushScope();
+  var body = Node~(0);
+  body = pStatement();
+  if (pPanic) { return Node~(0); }
+  var innerScope = pPopScope();
+  var outerScope = pPopScope();
+
+  var innerBlock = newNode(NK_BLOCK_STMT);
+  innerBlock~.list = vecNew();
+  vecPush(innerBlock~.list, int(body));
+  innerBlock~.scope = innerScope;
+
+  var loop = newNode(NK_WHILE_STMT);
+  loop~.a = condition;
+  loop~.b = innerBlock;
+  if (int(increment) != 0) {
+    var incStmt = newNode(NK_EXPRESSION_STMT);
+    incStmt~.a = increment;
+    loop~.c = incStmt;
+  } else {
+    loop~.c = Node~(0);
+  }
+
+  var outerBlock = newNode(NK_BLOCK_STMT);
+  outerBlock~.list = vecNew();
+  if (int(initializer) != 0) {
+    vecPush(outerBlock~.list, int(initializer));
+  }
+  vecPush(outerBlock~.list, int(loop));
+  outerBlock~.scope = outerScope;
+  return outerBlock;
+}
+
+// Parses statements until '}'. Returns a Vec of statement nodes.
+def pBlock() Vec~ {
+  var statements = vecNew();
+  while (!pCheck(T_RIGHT_BRACE) && !pIsAtEnd()) {
+    if (pMatch(T_VAR)) {
+      var varStmt = Node~(0);
+      varStmt = pVarDecl();
+      if (pPanic) {
+        pSynchronize();
+        continue;
+      }
+      vecPush(statements, int(varStmt));
+    } else {
+      var stmt = Node~(0);
+      stmt = pStatement();
+      if (pPanic) {
+        pSynchronize();
+        continue;
+      }
+      vecPush(statements, int(stmt));
+    }
+  }
+  var m0 = "Expect '}' after block.";
+  pConsume(T_RIGHT_BRACE, &m0[0], len(m0));
+  return statements;
+}
+
+def pInvalidTypePanic() {
+  errBegin(tokenLine(pPeek()));
+  var m0 = "Invalid type specifier starting at '";
+  errRaw(&m0[0], len(m0));
+  errRaw(pPeek()~.lexPtr, pPeek()~.lexLen);
+  var m1 = "'.";
+  errRaw(&m1[0], len(m1));
+  errEnd();
+  pPanic = true;
+}
+
+def pType() Type~ {
+  var baseType = Type~(0);
+  if (pMatch(T_LEFT_BRACKET)) {
+    var elementType = Type~(0);
+    elementType = pType();
+    if (pPanic) { return gTypeError; }
+    var m0 = "Expect ';' in array type.";
+    pConsume(T_SEMICOLON, &m0[0], len(m0));
+    if (pPanic) { return gTypeError; }
+    var m1 = "Expect array length specifier.";
+    var lengthTok = pConsume(T_NUMBER, &m1[0], len(m1));
+    if (pPanic) { return gTypeError; }
+    var m2 = "Expect ']' after array type.";
+    pConsume(T_RIGHT_BRACKET, &m2[0], len(m2));
+    if (pPanic) { return gTypeError; }
+    baseType = arrayType(elementType, lengthTok~.litInt);
+  } else if (pMatch(T_INT)) {
+    baseType = gTypeInt;
+  } else if (pMatch(T_FLOAT)) {
+    baseType = gTypeFloat;
+  } else if (pMatch(T_BYTE)) {
+    baseType = gTypeByte;
+  } else if (pMatch(T_BOOL)) {
+    baseType = gTypeBool;
+  } else if (pMatch(T_IDENTIFIER)) {
+    baseType = unresolvedStructType(pPrevious());
+  }
+
+  if (int(baseType) != 0) {
+    var outType = baseType;
+    while (pMatch(T_TILDE)) {
+      if (isValidElementType(outType)) {
+        outType = ptrType(outType);
+      } else {
+        pInvalidTypePanic();
+        return gTypeError;
+      }
+    }
+    return outType;
+  }
+  pInvalidTypePanic();
+  return gTypeError;
+}
+
+def pExpression() Node~ {
+  return pExprAssignment();
+}
+
+// Builds the assign node for compound assignment operators (+=, -=, ...),
+// desugaring into `left = left <op> right`.
+def pCompoundAssign(left Node~, combinedOperator Token~, opType int, opChar int) Node~ {
+  var right = Node~(0);
+  right = pExprAssignment();
+  if (pPanic) { return Node~(0); }
+  var opStr = bufNew();
+  bufPushChar(opStr, opChar);
+  var binary = newNode(NK_BINARY_EXPR);
+  binary~.a = left;
+  binary~.tokA = fakeToken(opType, strFromBuf(opStr), combinedOperator);
+  binary~.b = right;
+  var node = newNode(NK_ASSIGN_EXPR);
+  node~.tokA = combinedOperator;
+  node~.a = left;
+  node~.b = binary;
+  return node;
+}
+
+def pInvalidAssignmentTarget() {
+  // No need to panic and synchronize.
+  // Report error; it's still valuable to continue parsing
+  // the rest of whatever statement we're in to indicate
+  // remaining syntax errors to the user.
+  errBegin(tokenLine(pPeek()));
+  var m0 = "Invalid assignment target.";
+  errRaw(&m0[0], len(m0));
+  errEnd();
+}
+
+def pExprAssignment() Node~ {
+  var expr = Node~(0);
+  expr = pExprOr();
+  if (pPanic) { return Node~(0); }
+  var isValidAssignmentTarget =
+    expr~.kind == NK_VARIABLE_EXPR ||
+    expr~.kind == NK_INDEX_EXPR ||
+    expr~.kind == NK_DEREF_EXPR ||
+    expr~.kind == NK_DOT_EXPR;
+  if (pMatch(T_EQUAL)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    if (isValidAssignmentTarget) {
+      var node = newNode(NK_ASSIGN_EXPR);
+      node~.tokA = operator;
+      node~.a = expr;
+      node~.b = right;
+      return node;
+    }
+    pInvalidAssignmentTarget();
+  } else if (pMatch(T_PLUS_EQUAL)) {
+    if (isValidAssignmentTarget) {
+      return pCompoundAssign(expr, pPrevious(), T_PLUS, 43);
+    }
+    var r1 = Node~(0);
+    r1 = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    pInvalidAssignmentTarget();
+  } else if (pMatch(T_MINUS_EQUAL)) {
+    if (isValidAssignmentTarget) {
+      return pCompoundAssign(expr, pPrevious(), T_MINUS, 45);
+    }
+    var r2 = Node~(0);
+    r2 = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    pInvalidAssignmentTarget();
+  } else if (pMatch(T_STAR_EQUAL)) {
+    if (isValidAssignmentTarget) {
+      return pCompoundAssign(expr, pPrevious(), T_STAR, 42);
+    }
+    var r3 = Node~(0);
+    r3 = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    pInvalidAssignmentTarget();
+  } else if (pMatch(T_SLASH_EQUAL)) {
+    if (isValidAssignmentTarget) {
+      return pCompoundAssign(expr, pPrevious(), T_SLASH, 47);
+    }
+    var r4 = Node~(0);
+    r4 = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    pInvalidAssignmentTarget();
+  } else if (pMatch(T_PERCENT_EQUAL)) {
+    if (isValidAssignmentTarget) {
+      return pCompoundAssign(expr, pPrevious(), T_PERCENT, 37);
+    }
+    var r5 = Node~(0);
+    r5 = pExprAssignment();
+    if (pPanic) { return Node~(0); }
+    pInvalidAssignmentTarget();
+  }
+  return expr;
+}
+
+def pExprOr() Node~ {
+  var expr = Node~(0);
+  expr = pExprAnd();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_BAR_BAR)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprAnd();
+    if (pPanic) { return Node~(0); }
+    var node = newNode(NK_LOGICAL_EXPR);
+    node~.a = expr;
+    node~.tokA = operator;
+    node~.b = right;
+    expr = node;
+  }
+  return expr;
+}
+
+def pExprAnd() Node~ {
+  var expr = Node~(0);
+  expr = pExprEquality();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_AMP_AMP)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprEquality();
+    if (pPanic) { return Node~(0); }
+    var node = newNode(NK_LOGICAL_EXPR);
+    node~.a = expr;
+    node~.tokA = operator;
+    node~.b = right;
+    expr = node;
+  }
+  return expr;
+}
+
+def pBinaryStep(left Node~, operator Token~, right Node~) Node~ {
+  var node = newNode(NK_BINARY_EXPR);
+  node~.a = left;
+  node~.tokA = operator;
+  node~.b = right;
+  return node;
+}
+
+def pExprEquality() Node~ {
+  var expr = Node~(0);
+  expr = pExprComparison();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_EQUAL_EQUAL) || pMatch(T_BANG_EQUAL)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprComparison();
+    if (pPanic) { return Node~(0); }
+    expr = pBinaryStep(expr, operator, right);
+  }
+  return expr;
+}
+
+def pExprComparison() Node~ {
+  var expr = Node~(0);
+  expr = pExprTerm();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_GREATER) || pMatch(T_GREATER_EQUAL) || pMatch(T_LESS) || pMatch(T_LESS_EQUAL)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprTerm();
+    if (pPanic) { return Node~(0); }
+    expr = pBinaryStep(expr, operator, right);
+  }
+  return expr;
+}
+
+def pExprTerm() Node~ {
+  var expr = Node~(0);
+  expr = pExprFactor();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_MINUS) || pMatch(T_PLUS)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprFactor();
+    if (pPanic) { return Node~(0); }
+    expr = pBinaryStep(expr, operator, right);
+  }
+  return expr;
+}
+
+def pExprFactor() Node~ {
+  var expr = Node~(0);
+  expr = pExprUnary();
+  if (pPanic) { return Node~(0); }
+  while (pMatch(T_SLASH) || pMatch(T_STAR) || pMatch(T_PERCENT)) {
+    var operator = pPrevious();
+    var right = Node~(0);
+    right = pExprUnary();
+    if (pPanic) { return Node~(0); }
+    expr = pBinaryStep(expr, operator, right);
+  }
+  return expr;
+}
+
+def pExprUnary() Node~ {
+  if (pMatch(T_BANG) || pMatch(T_MINUS) || pMatch(T_AMP)) {
+    var operator = pPrevious();
+    var value = Node~(0);
+    value = pExprUnary();
+    if (pPanic) { return Node~(0); }
+    var node = newNode(NK_UNARY_EXPR);
+    node~.tokA = operator;
+    node~.a = value;
+    return node;
+  }
+  return pExprCall();
+}
+
+def pExprCall() Node~ {
+  var expr = Node~(0);
+  expr = pExprPrimary();
+  if (pPanic) { return Node~(0); }
+  // can have at most one call or construct in series of calls/indexes (no first class functions)
+  if (pMatch(T_LEFT_PAREN)) {
+    var paren = pPrevious();
+    var args = vecNew();
+    while (!pCheck(T_RIGHT_PAREN) && !pIsAtEnd()) {
+      if (args~.count > 0) {
+        var m0 = "Expect ',' between arguments.";
+        pConsume(T_COMMA, &m0[0], len(m0));
+        if (pPanic) { return Node~(0); }
+      }
+      var arg = Node~(0);
+      arg = pExpression();
+      if (pPanic) { return Node~(0); }
+      vecPush(args, int(arg));
+    }
+    var m1 = "Expect ')' after arguments.";
+    pConsume(T_RIGHT_PAREN, &m1[0], len(m1));
+    if (pPanic) { return Node~(0); }
+    var node = newNode(NK_CALL_EXPR);
+    node~.a = expr;
+    node~.tokA = paren;
+    node~.list = args;
+    expr = node;
+  } else if (pMatch(T_LEFT_BRACE)) {
+    var brace = pPrevious();
+    var args2 = vecNew();
+    while (!pCheck(T_RIGHT_BRACE) && !pIsAtEnd()) {
+      if (args2~.count > 0) {
+        var m2 = "Expect ',' between member initializers.";
+        pConsume(T_COMMA, &m2[0], len(m2));
+        if (pPanic) { return Node~(0); }
+      }
+      var arg2 = Node~(0);
+      arg2 = pExpression();
+      if (pPanic) { return Node~(0); }
+      vecPush(args2, int(arg2));
+    }
+    var m3 = "Expect '}' after member initializers.";
+    pConsume(T_RIGHT_BRACE, &m3[0], len(m3));
+    if (pPanic) { return Node~(0); }
+    var node2 = newNode(NK_CALL_EXPR);
+    node2~.a = expr;
+    node2~.tokA = brace;
+    node2~.list = args2;
+    expr = node2;
+  }
+  // can have any number of indexes or pointer dereferences
+  while (pMatch(T_LEFT_BRACKET) || pMatch(T_TILDE) || pMatch(T_DOT)) {
+    var operator = pPrevious();
+    if (operator~.type == T_LEFT_BRACKET) {
+      var index = Node~(0);
+      index = pExpression();
+      if (pPanic) { return Node~(0); }
+      var m4 = "Expect ']' after index.";
+      pConsume(T_RIGHT_BRACKET, &m4[0], len(m4));
+      if (pPanic) { return Node~(0); }
+      var idxNode = newNode(NK_INDEX_EXPR);
+      idxNode~.a = expr;
+      idxNode~.tokA = operator;
+      idxNode~.b = index;
+      expr = idxNode;
+    } else if (operator~.type == T_TILDE) {
+      var derefNode = newNode(NK_DEREF_EXPR);
+      derefNode~.tokA = operator;
+      derefNode~.a = expr;
+      expr = derefNode;
+    } else {
+      var m5 = "Expect identifier after '.'.";
+      var identifier = pConsume(T_IDENTIFIER, &m5[0], len(m5));
+      if (pPanic) { return Node~(0); }
+      var dotNode = newNode(NK_DOT_EXPR);
+      dotNode~.a = expr;
+      dotNode~.tokA = operator;
+      dotNode~.tokB = identifier;
+      expr = dotNode;
+    }
+  }
+  return expr;
+}
+
+// Returns true if the token stream looks like the start of a cast to
+// a pointer-to-struct type, e.g. `Foo~(expr)` or `Foo~~(expr)`.
+def pCheckStructPtrCast() bool {
+  if (!pCheck(T_IDENTIFIER)) {
+    return false;
+  }
+  var i = pCurrent + 1;
+  while (i < numTokens() && tokenAt(i)~.type == T_TILDE) {
+    i = i + 1;
+  }
+  return i > pCurrent + 1 && i < numTokens() && tokenAt(i)~.type == T_LEFT_PAREN;
+}
+
+def pCastPrimary() Node~ {
+  // cast expression
+  var castType = Type~(0);
+  castType = pType();
+  if (pPanic) { return Node~(0); }
+  var c = castType~.category;
+  if (!(c == TC_INT || c == TC_FLOAT || c == TC_BYTE || c == TC_BOOL || c == TC_POINTER)) {
+    var m0 = "Cannot cast to this type.";
+    pPanicHere(&m0[0], len(m0));
+    return Node~(0);
+  }
+  var m1 = "Expect '(' after type in cast expression.";
+  pConsume(T_LEFT_PAREN, &m1[0], len(m1));
+  if (pPanic) { return Node~(0); }
+  var paren = pPrevious();
+  var value = Node~(0);
+  value = pExpression();
+  if (pPanic) { return Node~(0); }
+  var m2 = "Expect ')' after cast expression.";
+  pConsume(T_RIGHT_PAREN, &m2[0], len(m2));
+  if (pPanic) { return Node~(0); }
+  var node = newNode(NK_CAST_EXPR);
+  node~.tokA = paren;
+  node~.typeA = castType;
+  node~.a = value;
+  return node;
+}
+
+def pExprPrimary() Node~ {
+  if (pMatch(T_TRUE) || pMatch(T_FALSE)) {
+    var node = newNode(NK_LITERAL_EXPR);
+    node~.typeA = gTypeBool;
+    node~.litBool = pPrevious()~.type == T_TRUE;
+    return node;
+  }
+  if (pMatch(T_NUMBER)) {
+    var node2 = newNode(NK_LITERAL_EXPR);
+    node2~.typeA = gTypeInt;
+    node2~.litInt = pPrevious()~.litInt;
+    node2~.decStr = pPrevious()~.decStr;
+    return node2;
+  }
+  if (pMatch(T_NUMBER_DECIMAL)) {
+    var node3 = newNode(NK_LITERAL_EXPR);
+    node3~.typeA = gTypeFloat;
+    node3~.litFloat = pPrevious()~.litFloat;
+    node3~.lexeme = tokenLexemeStr(pPrevious());
+    return node3;
+  }
+  if (pMatch(T_NUMBER_HEX)) {
+    var node4 = newNode(NK_LITERAL_EXPR);
+    node4~.typeA = gTypeInt;
+    node4~.litInt = pPrevious()~.litInt;
+    node4~.decStr = pPrevious()~.decStr;
+    return node4;
+  }
+  if (pMatch(T_STRING)) {
+    var s = pPrevious()~.litStr;
+    var existing = strLitLookup(s);
+    if (int(existing) != 0) {
+      return existing;
+    }
+    var litNode = newNode(NK_LITERAL_EXPR);
+    litNode~.typeA = arrayType(gTypeByte, s~.count);
+    litNode~.litStr = s;
+    strLitIntern(s, litNode);
+    return litNode;
+  }
+  if (pMatch(T_SINGLE_QUOTE_STRING)) {
+    var cs = pPrevious()~.litStr;
+    // The reference compiler checks the UTF-16 length of the literal;
+    // compute it from the UTF-8 bytes.
+    var utf16Len = 0;
+    for (var ci = 0; ci < cs~.count; ci = ci + 1) {
+      var cb = int(strGet(cs, ci));
+      if (cb < 128) {
+        utf16Len = utf16Len + 1;       // ASCII
+      } else if (cb >= 240) {
+        utf16Len = utf16Len + 2;       // 4-byte sequence: surrogate pair
+      } else if (cb >= 192) {
+        utf16Len = utf16Len + 1;       // 2- or 3-byte sequence lead
+      }                                // else: continuation byte
+    }
+    if (utf16Len != 1) {
+      var m0 = "Invalid character literal (use double quotes for strings).";
+      pPanicHere(&m0[0], len(m0));
+      return Node~(0);
+    }
+    if (int(strGet(cs, 0)) >= 128) {
+      var m1 = "Invalid character literal (only ASCII characters allowed).";
+      pPanicHere(&m1[0], len(m1));
+      return Node~(0);
+    }
+    var chNode = newNode(NK_LITERAL_EXPR);
+    chNode~.typeA = gTypeByte;
+    chNode~.litInt = int(strGet(cs, 0));
+    return chNode;
+  }
+  if (pCheckStructPtrCast()) {
+    return pCastPrimary();
+  }
+  if (pMatch(T_IDENTIFIER)) {
+    var varNode = newNode(NK_VARIABLE_EXPR);
+    varNode~.tokA = pPrevious();
+    return varNode;
+  }
+  if (pMatch(T_LEFT_PAREN)) {
+    var expr = Node~(0);
+    expr = pExpression();
+    if (pPanic) { return Node~(0); }
+    var m2 = "Expect ')' matching '('.";
+    pConsume(T_RIGHT_PAREN, &m2[0], len(m2));
+    if (pPanic) { return Node~(0); }
+    var groupNode = newNode(NK_GROUP_EXPR);
+    groupNode~.a = expr;
+    return groupNode;
+  }
+  if (pMatch(T_LEFT_BRACKET)) {
+    var bracket = pPrevious();
+    var values = vecNew();
+    if (!pCheck(T_RIGHT_BRACKET)) {
+      // disambiguate between [x; N] and [x, y, z] literals
+      var value = Node~(0);
+      value = pExpression();
+      if (pPanic) { return Node~(0); }
+      if (pMatch(T_SEMICOLON)) {
+        var m3 = "Expect length specifier in array repeat literal.";
+        var lengthTok = pConsume(T_NUMBER, &m3[0], len(m3));
+        if (pPanic) { return Node~(0); }
+        if (lengthTok~.litInt < 0) {
+          var m4 = "Array length specifier must be >=0.";
+          pPanicHere(&m4[0], len(m4));
+          return Node~(0);
+        }
+        var m5 = "Expect ']' after list literal.";
+        pConsume(T_RIGHT_BRACKET, &m5[0], len(m5));
+        if (pPanic) { return Node~(0); }
+        var repNode = newNode(NK_LIST_EXPR);
+        repNode~.tokA = bracket;
+        repNode~.listKind = LK_REPEAT;
+        repNode~.a = value;
+        repNode~.repeatLen = lengthTok~.litInt;
+        return repNode;
+      }
+      vecPush(values, int(value));
+      while (!pCheck(T_RIGHT_BRACKET) && !pIsAtEnd()) {
+        if (values~.count > 0) {
+          var m6 = "Expect ',' between items in list literal.";
+          pConsume(T_COMMA, &m6[0], len(m6));
+          if (pPanic) { return Node~(0); }
+        }
+        var val = Node~(0);
+        val = pExpression();
+        if (pPanic) { return Node~(0); }
+        vecPush(values, int(val));
+      }
+    }
+    var m7 = "Expect ']' after list literal.";
+    pConsume(T_RIGHT_BRACKET, &m7[0], len(m7));
+    if (pPanic) { return Node~(0); }
+    var listNode = newNode(NK_LIST_EXPR);
+    listNode~.tokA = bracket;
+    listNode~.listKind = LK_LIST;
+    listNode~.list = values;
+    return listNode;
+  }
+
+  if (pCheck(T_INT) || pCheck(T_FLOAT) || pCheck(T_BYTE) || pCheck(T_BOOL)) {
+    return pCastPrimary();
+  }
+
+  if (pMatch(T_LEN)) {
+    var m8 = "Expect '(' before len expression.";
+    pConsume(T_LEFT_PAREN, &m8[0], len(m8));
+    if (pPanic) { return Node~(0); }
+    var lenValue = Node~(0);
+    lenValue = pExpression();
+    if (pPanic) { return Node~(0); }
+    var m9 = "Expect ')' after len expression.";
+    pConsume(T_RIGHT_PAREN, &m9[0], len(m9));
+    if (pPanic) { return Node~(0); }
+    var lenNode = newNode(NK_LEN_EXPR);
+    lenNode~.a = lenValue;
+    lenNode~.resolvedType = gTypeInt;
+    return lenNode;
+  }
+
+  var m10 = "Expect expression.";
+  pPanicHere(&m10[0], len(m10));
+  return Node~(0);
+}
+
+// Parses gTokens into gTopLevel. Mirrors `parse` in src/parser.ts.
+// initContext() must have been called already.
+def parseProgram() {
+  pCurrent = 0;
+  pPanic = false;
+  vecPush(pScopes, int(gGlobalScope));
+  while (!pIsAtEnd()) {
+    var stmt = Node~(0);
+    stmt = pTopDecl();
+    if (pPanic) {
+      pSynchronize();
+      continue;
+    }
+    vecPush(gTopLevel, int(stmt));
+  }
+}

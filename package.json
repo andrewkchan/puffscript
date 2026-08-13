@@ -14,7 +14,8 @@
     "build": "tsc && node dist/index.js",
     "bundle-demo": "esbuild --bundle --outfile=demo.js --platform=browser demo.ts",
     "test": "tsc && jest dist/",
-    "test-debug": "tsc && node --inspect-brk node_modules/.bin/jest dist/"
+    "test-debug": "tsc && node --inspect-brk node_modules/.bin/jest dist/",
+    "bootstrap": "tsc && tools/bootstrap.sh"
   },
   "author": "andrewkchan",
   "license": "ISC",

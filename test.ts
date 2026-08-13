@@ -54,7 +54,14 @@ function expectErrors(source: string, expectedErrors: string[], passes: Passes):
   expect(errors).toEqual(expectedErrors)
   return context
 }
-async function expectOutput(source: string, expectedOutput: string) {
+class ExitCalled extends Error {
+  code: number
+  constructor(code: number) {
+    super(`exit ${code}`)
+    this.code = code
+  }
+}
+async function expectOutput(source: string, expectedOutput: string, stdin: string = "", expectedExitCode: number = 0) {
   const context = expectErrors(source, [], Passes.THROUGH_RESOLVE)
   if (context) {
     const code = emit(context)
@@ -62,6 +69,8 @@ async function expectOutput(source: string, expectedOutput: string) {
     child_process.execSync(`npx -p wabt wat2wasm test/tmp.wat -o test/tmp.wasm`)
 
     const codec = new UTF8Codec()
+    const stdinBuf = codec.encodeString(stdin)
+    let stdinPos = 0
     let ioBuffer = ""
     let output = ""
 
@@ -83,12 +92,36 @@ async function expectOutput(source: string, expectedOutput: string) {
           output += ioBuffer + "\n"
           ioBuffer = ""
         }
+      },
+      env: {
+        getchar: (): number => {
+          return stdinPos < stdinBuf.length ? stdinBuf[stdinPos++] : -1
+        },
+        putchar: (c: number) => {
+          output += codec.decodeASCIIChar(c & 0xFF)
+        },
+        puterr: (c: number) => {
+          output += codec.decodeASCIIChar(c & 0xFF)
+        },
+        exit: (code: number) => {
+          throw new ExitCalled(code)
+        }
       }
     });
     const exports = instance.instance.exports as any
-    exports.__init_globals__()
-    exports.main()
+    let exitCode = 0
+    try {
+      exports.__init_globals__()
+      exports.main()
+    } catch (e) {
+      if (e instanceof ExitCalled) {
+        exitCode = e.code
+      } else {
+        throw e
+      }
+    }
     expect(output).toBe(expectedOutput)
+    expect(exitCode).toBe(expectedExitCode)
   }
 }
 
@@ -424,6 +457,81 @@ describe("parser", () => {
       "13: 'FunctionStructCollision' is already declared in this scope.",
       "18: Expect expression.",
     ])
+  })
+
+  test("Import and export declarations", () => {
+    expectAST(`
+    import def getchar() int;
+    import def putchar(c int);
+    export def main() {}
+    `,
+    "(" +
+      "(import def getchar () ()) " +
+      "(import def putchar ((param c int)) ()) " +
+      "(export def main () ())" +
+    ")")
+
+    expectParseErrors(`
+    import getchar() int;
+    def main() {}
+    `,
+    [
+      "1: Expect 'def' after 'import'."
+    ])
+
+    expectParseErrors(`
+    import def getchar() int
+    def main() {}
+    `,
+    [
+      "2: Expect ';' after import declaration."
+    ])
+
+    expectParseErrors(`
+    export struct Point { x int, y int }
+    def main() {}
+    `,
+    [
+      "1: Expect 'def' after 'export'."
+    ])
+
+    expectParseErrors(`
+    import def getchar() int;
+    def getchar() int { return -1; }
+    def main() {}
+    `,
+    [
+      "2: 'getchar' is already declared in this scope."
+    ])
+
+    expectParseErrors(`
+    def main() {
+      import def getchar() int;
+    }
+    `,
+    [
+      "2: Expect expression.", // at 'import'
+      "2: Expect expression."  // after synchronizing to 'def'
+    ])
+  })
+
+  test("Pointer cast syntax", () => {
+    expectAST(`
+    struct Token { pos int }
+    def main() {
+      var p = int~(1024);
+      var t = Token~(p);
+      var i = int(t);
+    }
+    `,
+    "(" +
+      "(struct Token ((pos int))) " +
+      "(def main () (" +
+        "(var p ((ptr int) 1024)) " +
+        "(var t ((ptr (struct (unresolved 'Token'))) p)) " +
+        "(var i (int t))" +
+      "))" +
+    ")")
   })
 })
 
@@ -1605,6 +1713,64 @@ describe("type checking", () => {
     [
       "2: Cyclic member declaration for struct 'BadList'.",
       "14: Cyclic member declaration for struct 'Bad1'.",
+    ])
+  })
+
+  test("pointer casts", () => {
+    expectResolveErrors(`
+    struct Vec { x float, y float }
+    def main() {
+      var p = int~(1024);      // ok: int-to-pointer
+      var v = Vec~(p);         // ok: pointer-to-pointer
+      var i = int(v);          // ok: pointer-to-int
+      var f = float~(p);       // ok: pointer-to-pointer
+      var e1 = float~(1.5);    // error! float-to-pointer
+      var e2 = int~(true);     // error! bool-to-pointer
+      var e3 = float(p);       // error! pointer-to-float
+      var e4 = Missing~(p);    // error! unknown typename
+    }
+    `,
+    [
+      "7: Cannot cast from float to float~.",
+      "8: Cannot cast from bool to int~.",
+      "9: Cannot cast from int~ to float.",
+      "10: Undefined typename 'Missing'.",
+    ])
+  })
+
+  test("imports and builtins", () => {
+    expectResolveErrors(`
+    import def getchar() int;
+    import def putchar(c int);
+    def main() {
+      putchar(getchar());
+      putchar();               // error! arity
+      var x int = getchar(3);  // error! arity
+      var pages = __grow_heap__(1);
+      var end int = __heap_end__();
+    }
+    `,
+    [
+      "5: Expected 1 arguments but got 0 in call to putchar.",
+      "6: Expected 0 arguments but got 1 in call to getchar.",
+    ])
+  })
+
+  test("address-of struct members and dereferences", () => {
+    expectResolveErrors(`
+    struct Point { x int, y int }
+    def main() {
+      var pt = Point{1, 2};
+      var px = &pt.x;          // ok
+      var pp = &pt;            // ok
+      var py = &pp~.y;         // ok
+      var pd = &pp~;           // ok
+      px~ = 5;
+      var bad = &5;            // error!
+    }
+    `,
+    [
+      "9: Invalid operand for unary operator '&'.",
     ])
   })
 })
@@ -2868,6 +3034,284 @@ done
 [1, 0]
 `.trim() + "\n")
   })
+
+  test("imports, exports, and pointer casts", async () => {
+    await expectOutput(`
+    import def getchar() int;
+    import def putchar(c int);
+
+    struct Point { x int, y int }
+
+    export def heapStart() int {
+      return 1024*1024;
+    }
+
+    def main() {
+      var p = Point~(int~(heapStart()));
+      p~.x = 3;
+      p~.y = 4;
+      var py = &p~.y;
+      py~ = 5;
+      print p~.x + p~.y;
+      print int(py) - int(p);
+      print int~(int(p)) == int~(heapStart());
+
+      // echo stdin to stdout, uppercasing lowercase ascii
+      var c = getchar();
+      while (c >= 0) {
+        if (c >= int('a') && c <= int('z')) {
+          c = c - 32;
+        }
+        putchar(c);
+        c = getchar();
+      }
+    }
+    `,
+    `
+8
+4
+1
+`.trim() + "\n" + "WASM!\n",
+    "wasm!\n")
+  })
+
+  test("heap builtins", async () => {
+    await expectOutput(`
+    def main() {
+      var initialPages = __heap_end__() / 65536;
+      print initialPages;
+      var res = __grow_heap__(2);
+      print res == initialPages;
+      print __heap_end__() / 65536 - initialPages;
+
+      // write to and read from newly grown memory
+      var p = int~(__heap_end__() - 4);
+      p~ = 12345;
+      print p~;
+    }
+    `,
+    `
+128
+1
+2
+12345
+`.trim() + "\n")
+  })
+
+  test("exit builtin", async () => {
+    await expectOutput(`
+    import def exit(code int);
+    def main() {
+      print 1;
+      exit(42);
+      print 2;
+    }
+    `,
+    `
+1
+`.trim() + "\n",
+    "",
+    42)
+  })
+})
+
+describe("self-hosting", () => {
+  const SELFHOST_SOURCES = [
+    "selfhost/util.puff",
+    "selfhost/scanner.puff",
+    "selfhost/ast.puff",
+    "selfhost/sexpr.puff",
+    "selfhost/parser.puff",
+    "selfhost/resolver.puff",
+    "selfhost/backend.puff",
+    "selfhost/main.puff",
+  ]
+
+  function compileWithReference(source: string): string {
+    const errors: string[] = []
+    const reportError: ReportError = (line, msg) => {
+      errors.push(`${line}: ${msg}`)
+    }
+    const tokens = scanTokens(source, reportError)
+    expect(errors).toEqual([])
+    const context = parse(tokens, reportError)
+    expect(errors).toEqual([])
+    resolve(context, reportError)
+    expect(errors).toEqual([])
+    return emit(context)
+  }
+
+  // Runs a compiled puffscript compiler (WASM) on the given source text,
+  // returning its stdout (the generated WAT), stderr, and exit code.
+  async function runCompilerWasm(wasmFile: string, source: string): Promise<{ out: string, err: string, exitCode: number }> {
+    const codec = new UTF8Codec()
+    const input = codec.encodeString(source)
+    let inputPos = 0
+    const outChunks: number[] = []
+    const errChunks: number[] = []
+    let ioBuffer = ""
+    let extraOut = ""
+    const instance = await WebAssembly.instantiate(fs.readFileSync(wasmFile), {
+      io: {
+        log: (x: any) => { extraOut += x + "\n" },
+        putchar: (x: number) => { ioBuffer += codec.decodeASCIIChar(x) },
+        putf: (x: number) => { ioBuffer += x },
+        puti: (x: number) => { ioBuffer += x },
+        flush: () => { extraOut += ioBuffer + "\n"; ioBuffer = "" }
+      },
+      env: {
+        getchar: (): number => inputPos < input.length ? input[inputPos++] : -1,
+        putchar: (c: number) => { outChunks.push(c & 0xFF) },
+        puterr: (c: number) => { errChunks.push(c & 0xFF) },
+        exit: (code: number) => { throw new ExitCalled(code) }
+      }
+    })
+    const exports = instance.instance.exports as any
+    let exitCode = 0
+    try {
+      exports.__init_globals__()
+      exports.main()
+    } catch (e) {
+      if (e instanceof ExitCalled) {
+        exitCode = e.code
+      } else {
+        throw e
+      }
+    }
+    expect(extraOut).toBe("")
+    return {
+      out: Buffer.from(outChunks).toString("utf8"),
+      err: Buffer.from(errChunks).toString("utf8"),
+      exitCode
+    }
+  }
+
+  test("bootstrap: the compiler compiles itself (fixpoint)", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+
+    // Stage 1: compile the self-hosted compiler with the reference compiler.
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    // Stage 2: the self-hosted compiler compiles its own source.
+    // Its output must be byte-identical to the reference compiler's.
+    const stage2 = await runCompilerWasm("test/selfhost-stage1.wasm", compilerSource)
+    expect(stage2.err).toBe("")
+    expect(stage2.exitCode).toBe(0)
+    expect(stage2.out).toBe(stage1Wat)
+    fs.writeFileSync("test/selfhost-stage2.wat", stage2.out)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage2.wat -o test/selfhost-stage2.wasm`)
+
+    // Stage 3: the self-compiled compiler compiles its own source again;
+    // the output must reach a fixpoint.
+    const stage3 = await runCompilerWasm("test/selfhost-stage2.wasm", compilerSource)
+    expect(stage3.err).toBe("")
+    expect(stage3.exitCode).toBe(0)
+    expect(stage3.out).toBe(stage2.out)
+  }, 120000)
+
+  test("self-hosted compiler compiles programs identically to the reference", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    const programs = [
+      `
+      def fib(n int) int {
+        if (n <= 1) { return 1; }
+        return fib(n-1) + fib(n-2);
+      }
+      struct Point { x float, y float }
+      def main() {
+        var p = Point{1.5, 2.5};
+        var arr = [1, 2, 3];
+        var s = "hello";
+        for (var i = 0; i < len(arr); i += 1) {
+          print fib(arr[i]);
+        }
+        print p.x + p.y;
+        print s;
+      }
+      `,
+      `
+      import def getchar() int;
+      import def putchar(c int);
+      def main() {
+        var c = getchar();
+        while (c >= 0) {
+          putchar(c);
+          c = getchar();
+        }
+      }
+      `,
+    ]
+    for (const program of programs) {
+      const source = program.trim() + "\n"
+      const expected = compileWithReference(source)
+      const result = await runCompilerWasm("test/selfhost-stage1.wasm", source)
+      expect(result.err).toBe("")
+      expect(result.exitCode).toBe(0)
+      expect(result.out).toBe(expected)
+    }
+
+    // Error reporting must also match the reference compiler.
+    const badSource = `
+    def main() {
+      var x int = true;
+      undefinedFn();
+    }
+    `.trim() + "\n"
+    const errors: string[] = []
+    const reportError: ReportError = (line, msg) => { errors.push(`${line}: ${msg}`) }
+    const tokens = scanTokens(badSource, reportError)
+    const context = parse(tokens, reportError)
+    resolve(context, reportError)
+    expect(errors.length).toBeGreaterThan(0)
+    const result = await runCompilerWasm("test/selfhost-stage1.wasm", badSource)
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toBe(errors.map((e) => e + "\n").join(""))
+  }, 120000)
+
+  test("self-hosted compiler output runs correctly", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    const program = `
+    def main() {
+      var total = 0;
+      for (var i = 1; i <= 10; i += 1) {
+        total += i;
+      }
+      print total;
+      print "compiled by puffscript";
+    }
+    `.trim() + "\n"
+    const compiled = await runCompilerWasm("test/selfhost-stage1.wasm", program)
+    expect(compiled.exitCode).toBe(0)
+    fs.writeFileSync("test/selfhost-out.wat", compiled.out)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-out.wat -o test/selfhost-out.wasm`)
+
+    const codec = new UTF8Codec()
+    let ioBuffer = ""
+    let output = ""
+    const instance = await WebAssembly.instantiate(fs.readFileSync("test/selfhost-out.wasm"), {
+      io: {
+        log: (x: any) => { output += x + "\n" },
+        putchar: (x: number) => { ioBuffer += codec.decodeASCIIChar(x) },
+        putf: (x: number) => { ioBuffer += x },
+        puti: (x: number) => { ioBuffer += x },
+        flush: () => { output += ioBuffer + "\n"; ioBuffer = "" }
+      }
+    })
+    const exports = instance.instance.exports as any
+    exports.__init_globals__()
+    exports.main()
+    expect(output).toBe("55\ncompiled by puffscript\n")
+  }, 120000)
 })
 
 // TODO: string literals with non-ascii UTF-8 chars

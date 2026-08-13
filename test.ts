@@ -3115,4 +3115,203 @@ done
   })
 })
 
+describe("self-hosting", () => {
+  const SELFHOST_SOURCES = [
+    "selfhost/util.puff",
+    "selfhost/scanner.puff",
+    "selfhost/ast.puff",
+    "selfhost/sexpr.puff",
+    "selfhost/parser.puff",
+    "selfhost/resolver.puff",
+    "selfhost/backend.puff",
+    "selfhost/main.puff",
+  ]
+
+  function compileWithReference(source: string): string {
+    const errors: string[] = []
+    const reportError: ReportError = (line, msg) => {
+      errors.push(`${line}: ${msg}`)
+    }
+    const tokens = scanTokens(source, reportError)
+    expect(errors).toEqual([])
+    const context = parse(tokens, reportError)
+    expect(errors).toEqual([])
+    resolve(context, reportError)
+    expect(errors).toEqual([])
+    return emit(context)
+  }
+
+  // Runs a compiled puffscript compiler (WASM) on the given source text,
+  // returning its stdout (the generated WAT), stderr, and exit code.
+  async function runCompilerWasm(wasmFile: string, source: string): Promise<{ out: string, err: string, exitCode: number }> {
+    const codec = new UTF8Codec()
+    const input = codec.encodeString(source)
+    let inputPos = 0
+    const outChunks: number[] = []
+    const errChunks: number[] = []
+    let ioBuffer = ""
+    let extraOut = ""
+    const instance = await WebAssembly.instantiate(fs.readFileSync(wasmFile), {
+      io: {
+        log: (x: any) => { extraOut += x + "\n" },
+        putchar: (x: number) => { ioBuffer += codec.decodeASCIIChar(x) },
+        putf: (x: number) => { ioBuffer += x },
+        puti: (x: number) => { ioBuffer += x },
+        flush: () => { extraOut += ioBuffer + "\n"; ioBuffer = "" }
+      },
+      env: {
+        getchar: (): number => inputPos < input.length ? input[inputPos++] : -1,
+        putchar: (c: number) => { outChunks.push(c & 0xFF) },
+        puterr: (c: number) => { errChunks.push(c & 0xFF) },
+        exit: (code: number) => { throw new ExitCalled(code) }
+      }
+    })
+    const exports = instance.instance.exports as any
+    let exitCode = 0
+    try {
+      exports.__init_globals__()
+      exports.main()
+    } catch (e) {
+      if (e instanceof ExitCalled) {
+        exitCode = e.code
+      } else {
+        throw e
+      }
+    }
+    expect(extraOut).toBe("")
+    return {
+      out: Buffer.from(outChunks).toString("utf8"),
+      err: Buffer.from(errChunks).toString("utf8"),
+      exitCode
+    }
+  }
+
+  test("bootstrap: the compiler compiles itself (fixpoint)", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+
+    // Stage 1: compile the self-hosted compiler with the reference compiler.
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    // Stage 2: the self-hosted compiler compiles its own source.
+    // Its output must be byte-identical to the reference compiler's.
+    const stage2 = await runCompilerWasm("test/selfhost-stage1.wasm", compilerSource)
+    expect(stage2.err).toBe("")
+    expect(stage2.exitCode).toBe(0)
+    expect(stage2.out).toBe(stage1Wat)
+    fs.writeFileSync("test/selfhost-stage2.wat", stage2.out)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage2.wat -o test/selfhost-stage2.wasm`)
+
+    // Stage 3: the self-compiled compiler compiles its own source again;
+    // the output must reach a fixpoint.
+    const stage3 = await runCompilerWasm("test/selfhost-stage2.wasm", compilerSource)
+    expect(stage3.err).toBe("")
+    expect(stage3.exitCode).toBe(0)
+    expect(stage3.out).toBe(stage2.out)
+  }, 120000)
+
+  test("self-hosted compiler compiles programs identically to the reference", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    const programs = [
+      `
+      def fib(n int) int {
+        if (n <= 1) { return 1; }
+        return fib(n-1) + fib(n-2);
+      }
+      struct Point { x float, y float }
+      def main() {
+        var p = Point{1.5, 2.5};
+        var arr = [1, 2, 3];
+        var s = "hello";
+        for (var i = 0; i < len(arr); i += 1) {
+          print fib(arr[i]);
+        }
+        print p.x + p.y;
+        print s;
+      }
+      `,
+      `
+      import def getchar() int;
+      import def putchar(c int);
+      def main() {
+        var c = getchar();
+        while (c >= 0) {
+          putchar(c);
+          c = getchar();
+        }
+      }
+      `,
+    ]
+    for (const program of programs) {
+      const source = program.trim() + "\n"
+      const expected = compileWithReference(source)
+      const result = await runCompilerWasm("test/selfhost-stage1.wasm", source)
+      expect(result.err).toBe("")
+      expect(result.exitCode).toBe(0)
+      expect(result.out).toBe(expected)
+    }
+
+    // Error reporting must also match the reference compiler.
+    const badSource = `
+    def main() {
+      var x int = true;
+      undefinedFn();
+    }
+    `.trim() + "\n"
+    const errors: string[] = []
+    const reportError: ReportError = (line, msg) => { errors.push(`${line}: ${msg}`) }
+    const tokens = scanTokens(badSource, reportError)
+    const context = parse(tokens, reportError)
+    resolve(context, reportError)
+    expect(errors.length).toBeGreaterThan(0)
+    const result = await runCompilerWasm("test/selfhost-stage1.wasm", badSource)
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toBe(errors.map((e) => e + "\n").join(""))
+  }, 120000)
+
+  test("self-hosted compiler output runs correctly", async () => {
+    const compilerSource = SELFHOST_SOURCES.map((f) => fs.readFileSync(f, "utf8")).join("\n")
+    const stage1Wat = compileWithReference(compilerSource)
+    fs.writeFileSync("test/selfhost-stage1.wat", stage1Wat)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-stage1.wat -o test/selfhost-stage1.wasm`)
+
+    const program = `
+    def main() {
+      var total = 0;
+      for (var i = 1; i <= 10; i += 1) {
+        total += i;
+      }
+      print total;
+      print "compiled by puffscript";
+    }
+    `.trim() + "\n"
+    const compiled = await runCompilerWasm("test/selfhost-stage1.wasm", program)
+    expect(compiled.exitCode).toBe(0)
+    fs.writeFileSync("test/selfhost-out.wat", compiled.out)
+    child_process.execSync(`npx -p wabt wat2wasm test/selfhost-out.wat -o test/selfhost-out.wasm`)
+
+    const codec = new UTF8Codec()
+    let ioBuffer = ""
+    let output = ""
+    const instance = await WebAssembly.instantiate(fs.readFileSync("test/selfhost-out.wasm"), {
+      io: {
+        log: (x: any) => { output += x + "\n" },
+        putchar: (x: number) => { ioBuffer += codec.decodeASCIIChar(x) },
+        putf: (x: number) => { ioBuffer += x },
+        puti: (x: number) => { ioBuffer += x },
+        flush: () => { output += ioBuffer + "\n"; ioBuffer = "" }
+      }
+    })
+    const exports = instance.instance.exports as any
+    exports.__init_globals__()
+    exports.main()
+    expect(output).toBe("55\ncompiled by puffscript\n")
+  }, 120000)
+})
+
 // TODO: string literals with non-ascii UTF-8 chars

@@ -993,6 +993,10 @@ export class Context {
         {
           name: fakeToken(TokenType.IDENTIFIER, "dst"),
           type: ptrType(ByteType)
+        },
+        {
+          name: fakeToken(TokenType.IDENTIFIER, "numBytes"),
+          type: IntType
         }
       ],
       returnType: VoidType,

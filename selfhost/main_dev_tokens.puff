@@ -1,0 +1,34 @@
+// Development driver: dumps the token stream in the same format as
+// `tools/dump.ts --tokens` for differential testing.
+
+var gOut Buf~ = bufNewWithCap(65536);
+
+def main() {
+  gSource = readAllInput();
+  scanTokens();
+  if (numErrors() == 0) {
+    for (var i = 0; i < numTokens(); i = i + 1) {
+      var t = tokenAt(i);
+      bufPushInt(gOut, t~.type);
+      bufPushChar(gOut, 32);
+      bufPushInt(gOut, t~.offset);
+      bufPushChar(gOut, 32);
+      bufPushInt(gOut, t~.lexLen);
+      if (t~.type == T_NUMBER || t~.type == T_NUMBER_HEX) {
+        bufPushChar(gOut, 32);
+        bufPushBytes(gOut, t~.decStr~.data, t~.decStr~.count);
+      }
+      bufPushChar(gOut, 10);
+    }
+  }
+  writeBufTo(gOut, false);
+  for (var i = 0; i < gErrors~.count; i = i + 1) {
+    var e = Str~(vecGet(gErrors, i));
+    writeStrTo(e, true);
+    puterr(10);
+  }
+  if (numErrors() > 0) {
+    exit(1);
+  }
+  exit(0);
+}

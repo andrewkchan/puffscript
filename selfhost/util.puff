@@ -1,0 +1,328 @@
+// util.puff
+// Runtime support for the self-hosted puffscript compiler:
+// host imports, heap allocator, growable vectors and byte buffers,
+// string helpers, and number parsing/printing.
+
+import def getchar() int;
+import def putchar(c int);
+import def puterr(c int);
+import def exit(code int);
+
+// ---------------------------------------------------------------------------
+// Heap
+//
+// The puff memory layout puts the in-memory stack at [0, 4MB) and static data
+// at [4MB, 8MB). Memory beyond the initial 8MB is all ours; we implement a
+// simple bump allocator over it, growing the WASM memory as needed.
+// Fresh WASM memory is always zeroed, and we never free, so allocations are
+// guaranteed zero-initialized.
+// ---------------------------------------------------------------------------
+
+var heapPtr = __heap_end__();
+
+def alloc(numBytes int) byte~ {
+  // align allocations to 8 bytes
+  var n = (numBytes + 7) / 8 * 8;
+  var p = heapPtr;
+  while (p + n > __heap_end__()) {
+    var deficit = p + n - __heap_end__();
+    var pagesNeeded = (deficit + 65535) / 65536;
+    if (pagesNeeded < 16) {
+      pagesNeeded = 16;
+    }
+    if (__grow_heap__(pagesNeeded) < 0) {
+      die(70); // out of memory
+    }
+  }
+  heapPtr = p + n;
+  return byte~(p);
+}
+
+// Aborts the program, writing "internal error <code>" to stderr.
+def die(code int) {
+  var msg = "internal error ";
+  var i = 0;
+  while (i < len(msg)) {
+    puterr(int(msg[i]));
+    i = i + 1;
+  }
+  // print code digits
+  if (code < 0) {
+    puterr(45); // '-'
+    code = -code;
+  }
+  var scale = 1;
+  while (code / scale >= 10) {
+    scale = scale * 10;
+  }
+  while (scale > 0) {
+    puterr(48 + code / scale % 10);
+    scale = scale / 10;
+  }
+  puterr(10);
+  exit(101);
+}
+
+def memCopy(src byte~, dst byte~, numBytes int) {
+  __memcpy__(src, dst, numBytes);
+}
+
+// ---------------------------------------------------------------------------
+// Vec: growable array of i32 (also used for pointers via casts)
+// ---------------------------------------------------------------------------
+
+struct Vec {
+  data int~,
+  count int,
+  cap int
+}
+
+def vecNew() Vec~ {
+  var v = Vec~(alloc(12));
+  v~.cap = 8;
+  v~.count = 0;
+  v~.data = int~(alloc(v~.cap * 4));
+  return v;
+}
+
+def vecGrow(v Vec~, newCap int) {
+  if (newCap <= v~.cap) {
+    return;
+  }
+  var nd = int~(alloc(newCap * 4));
+  memCopy(byte~(v~.data), byte~(nd), v~.count * 4);
+  v~.data = nd;
+  v~.cap = newCap;
+}
+
+def vecPush(v Vec~, x int) {
+  if (v~.count == v~.cap) {
+    vecGrow(v, v~.cap * 2);
+  }
+  (v~.data + v~.count)~ = x;
+  v~.count = v~.count + 1;
+}
+
+def vecPop(v Vec~) int {
+  v~.count = v~.count - 1;
+  return (v~.data + v~.count)~;
+}
+
+def vecGet(v Vec~, i int) int {
+  if (i < 0 || i >= v~.count) {
+    die(71); // vec index out of bounds
+  }
+  return (v~.data + i)~;
+}
+
+def vecSet(v Vec~, i int, x int) {
+  if (i < 0 || i >= v~.count) {
+    die(72); // vec index out of bounds
+  }
+  (v~.data + i)~ = x;
+}
+
+def vecPeek(v Vec~) int {
+  return vecGet(v, v~.count - 1);
+}
+
+// ---------------------------------------------------------------------------
+// Buf: growable byte buffer (used for strings and program output)
+// ---------------------------------------------------------------------------
+
+struct Buf {
+  data byte~,
+  count int,
+  cap int
+}
+
+def bufNew() Buf~ {
+  return bufNewWithCap(16);
+}
+
+def bufNewWithCap(cap int) Buf~ {
+  var b = Buf~(alloc(12));
+  b~.cap = cap;
+  b~.count = 0;
+  b~.data = alloc(cap);
+  return b;
+}
+
+def bufGrow(b Buf~, newCap int) {
+  if (newCap <= b~.cap) {
+    return;
+  }
+  var nd = alloc(newCap);
+  memCopy(b~.data, nd, b~.count);
+  b~.data = nd;
+  b~.cap = newCap;
+}
+
+def bufPushByte(b Buf~, c byte) {
+  if (b~.count == b~.cap) {
+    bufGrow(b, b~.cap * 2);
+  }
+  (b~.data + b~.count)~ = c;
+  b~.count = b~.count + 1;
+}
+
+def bufPushChar(b Buf~, c int) {
+  bufPushByte(b, byte(c));
+}
+
+def bufPushBytes(b Buf~, p byte~, n int) {
+  if (b~.count + n > b~.cap) {
+    var newCap = b~.cap * 2;
+    while (b~.count + n > newCap) {
+      newCap = newCap * 2;
+    }
+    bufGrow(b, newCap);
+  }
+  memCopy(p, b~.data + b~.count, n);
+  b~.count = b~.count + n;
+}
+
+def bufGetByte(b Buf~, i int) byte {
+  if (i < 0 || i >= b~.count) {
+    die(73); // buf index out of bounds
+  }
+  return (b~.data + i)~;
+}
+
+// Appends the signed decimal representation of x.
+def bufPushInt(b Buf~, x int) {
+  if (x == 0) {
+    bufPushChar(b, 48); // '0'
+    return;
+  }
+  // Handle INT32_MIN (cannot be negated): x / 10 and x % 10 are safe on it.
+  var digits = [byte(0); 12];
+  var numDigits = 0;
+  if (x < 0) {
+    bufPushChar(b, 45); // '-'
+    // Collect digits from the negative value; i32 % is truncated so digits
+    // come out negative.
+    while (x != 0) {
+      var d = x % 10;
+      digits[numDigits] = byte(48 - d);
+      numDigits = numDigits + 1;
+      x = x / 10;
+    }
+  } else {
+    while (x != 0) {
+      digits[numDigits] = byte(48 + x % 10);
+      numDigits = numDigits + 1;
+      x = x / 10;
+    }
+  }
+  while (numDigits > 0) {
+    numDigits = numDigits - 1;
+    bufPushByte(b, digits[numDigits]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Str: immutable (pointer, length) string on the heap
+// ---------------------------------------------------------------------------
+
+struct Str {
+  data byte~,
+  count int
+}
+
+def strNew(p byte~, n int) Str~ {
+  var s = Str~(alloc(8));
+  s~.data = p;
+  s~.count = n;
+  return s;
+}
+
+// Copies the given bytes to the heap and wraps them in a Str.
+def strCopy(p byte~, n int) Str~ {
+  var d = alloc(n);
+  memCopy(p, d, n);
+  return strNew(d, n);
+}
+
+def strEmpty() Str~ {
+  return strNew(byte~(0), 0);
+}
+
+def strFromBuf(b Buf~) Str~ {
+  return strCopy(b~.data, b~.count);
+}
+
+def strGet(s Str~, i int) byte {
+  if (i < 0 || i >= s~.count) {
+    die(74); // str index out of bounds
+  }
+  return (s~.data + i)~;
+}
+
+def strEq(a Str~, b Str~) bool {
+  if (a~.count != b~.count) {
+    return false;
+  }
+  for (var i = 0; i < a~.count; i = i + 1) {
+    if ((a~.data + i)~ != (b~.data + i)~) {
+      return false;
+    }
+  }
+  return true;
+}
+
+def strEqRaw(a Str~, p byte~, n int) bool {
+  if (a~.count != n) {
+    return false;
+  }
+  for (var i = 0; i < n; i = i + 1) {
+    if ((a~.data + i)~ != (p + i)~) {
+      return false;
+    }
+  }
+  return true;
+}
+
+def strSub(s Str~, start int, end int) Str~ {
+  if (start < 0 || end > s~.count || start > end) {
+    die(75); // invalid substring range
+  }
+  return strNew(s~.data + start, end - start);
+}
+
+// ---------------------------------------------------------------------------
+// stdout/stderr helpers
+// ---------------------------------------------------------------------------
+
+def writeBufTo(b Buf~, isErr bool) {
+  for (var i = 0; i < b~.count; i = i + 1) {
+    var c = int((b~.data + i)~);
+    if (isErr) {
+      puterr(c);
+    } else {
+      putchar(c);
+    }
+  }
+}
+
+def writeStrTo(s Str~, isErr bool) {
+  for (var i = 0; i < s~.count; i = i + 1) {
+    var c = int((s~.data + i)~);
+    if (isErr) {
+      puterr(c);
+    } else {
+      putchar(c);
+    }
+  }
+}
+
+// Reads all of stdin into a Buf.
+def readAllInput() Buf~ {
+  var b = bufNewWithCap(65536);
+  var c = getchar();
+  while (c >= 0) {
+    bufPushChar(b, c);
+    c = getchar();
+  }
+  return b;
+}
